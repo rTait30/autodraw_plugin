@@ -12,13 +12,13 @@
 
   <ItemGroup>
     <Reference Include="accoremgd">
-      <HintPath>acadreferences\accoremgd.dll</HintPath>
+      <HintPath>..\..\Program Files\Autodesk\AutoCAD 2025\accoremgd.dll</HintPath>
     </Reference>
     <Reference Include="Acdbmgd">
-      <HintPath>acadreferences\acdbmgd.dll</HintPath>
+      <HintPath>..\..\Program Files\Autodesk\AutoCAD 2025\acdbmgd.dll</HintPath>
     </Reference>
     <Reference Include="Acmgd">
-      <HintPath>acadreferences\acmgd.dll</HintPath>
+      <HintPath>..\..\Program Files\Autodesk\AutoCAD 2025\acmgd.dll</HintPath>
     </Reference>
   </ItemGroup>
 
