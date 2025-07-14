@@ -745,6 +745,189 @@ public class JsonListCommand : IExtensionApplication
         btr.AppendEntity(dim);
         tr.AddNewlyCreatedDBObject(dim, true);
     }
+
+
+   
+    [CommandMethod("InspectMPanelPolylines")]
+    public void InspectMPanelPolylines()
+    {
+        Document doc = Application.DocumentManager.MdiActiveDocument;
+        Editor ed = doc.Editor;
+        Database db = doc.Database;
+
+        // Prompt user to select polylines on mPanel layer
+        PromptSelectionOptions opts = new PromptSelectionOptions();
+        opts.MessageForAdding = "\nSelect mPanel polylines (on layer 'mPanel'):";
+
+        // Filter for LWPOLYLINEs on 'mPanel' layer
+        TypedValue[] filterValues = new TypedValue[]
+        {
+            new TypedValue((int)DxfCode.LayerName, "mPanel"),
+            new TypedValue((int)DxfCode.Start, "LWPOLYLINE")
+        };
+        SelectionFilter filter = new SelectionFilter(filterValues);
+
+        PromptSelectionResult selResult = ed.GetSelection(opts, filter);
+        if (selResult.Status != PromptStatus.OK)
+        {
+            ed.WriteMessage("\nNo valid polylines selected.");
+            return;
+        }
+
+        SelectionSet ss = selResult.Value;
+
+        using (Transaction tr = db.TransactionManager.StartTransaction())
+        {
+            int count = 0;
+
+            foreach (ObjectId id in ss.GetObjectIds())
+            {
+                Polyline pline = tr.GetObject(id, OpenMode.ForRead) as Polyline;
+                if (pline == null) continue;
+
+                count++;
+
+                ed.WriteMessage($"\n--- Polyline #{count} ---");
+                ed.WriteMessage($"\nHandle: {pline.Handle}");
+                ed.WriteMessage($"\nClosed: {pline.Closed}");
+                ed.WriteMessage($"\nNumber of Vertices: {pline.NumberOfVertices}");
+
+                // Bounding box
+                Extents3d ext = pline.GeometricExtents;
+                ed.WriteMessage($"\nBounds: Min({ext.MinPoint.X:0.##}, {ext.MinPoint.Y:0.##}), Max({ext.MaxPoint.X:0.##}, {ext.MaxPoint.Y:0.##})");
+
+                // Vertices
+                for (int i = 0; i < pline.NumberOfVertices; i++)
+                {
+                    var pt = pline.GetPoint2dAt(i);
+                    ed.WriteMessage($"\n  Vertex {i + 1}: ({pt.X:0.##}, {pt.Y:0.##})");
+                }
+
+                ed.WriteMessage("\n");
+            }
+
+            tr.Commit();
+        }
+
+        ed.WriteMessage($"\nTotal polylines inspected: {ss.Count}");
+    }
+
+    private readonly string baseDirectory = @"C:\AutoDraw\";
+
+    class ProjectData
+    {
+        public string name { get; set; }
+        public string type { get; set; }
+        public Attributes attributes { get; set; }
+    }
+
+    class Attributes
+    {
+        public int pointCount { get; set; }
+        public Dictionary<string, double> dimensions { get; set; }
+        public Dictionary<string, PointAttributes> points { get; set; }
+        public string exitPoint { get; set; }
+    }
+
+    class PointAttributes
+    {
+        public string fixingType { get; set; }
+        public double height { get; set; }
+        public double tensionAllowance { get; set; }
+    }
+
+    [CommandMethod("ADSS")]
+    public void RunADSS()
+    {
+        Document doc = Application.DocumentManager.MdiActiveDocument;
+        Editor ed = doc.Editor;
+
+        if (!Directory.Exists(baseDirectory))
+        {
+            ed.WriteMessage($"\nProject directory not found: {baseDirectory}");
+            return;
+        }
+
+        var projectFolders = Directory.GetDirectories(baseDirectory)
+            .Where(dir => File.Exists(Path.Combine(dir, Path.GetFileName(dir) + ".json")))
+            .ToList();
+
+        if (projectFolders.Count == 0)
+        {
+            ed.WriteMessage("\nNo valid project folders with matching JSON files found.");
+            return;
+        }
+
+        ed.WriteMessage("\nAvailable project folders:\n");
+        for (int i = 0; i < projectFolders.Count; i++)
+        {
+            string name = Path.GetFileName(projectFolders[i]);
+            ed.WriteMessage($"{i + 1}. {name}\n");
+        }
+
+        PromptIntegerOptions opt = new PromptIntegerOptions("\nSelect project number:")
+        {
+            LowerLimit = 1,
+            UpperLimit = projectFolders.Count
+        };
+
+        PromptIntegerResult res = ed.GetInteger(opt);
+        if (res.Status != PromptStatus.OK)
+        {
+            ed.WriteMessage("\nCancelled.");
+            return;
+        }
+
+        string selectedFolder = projectFolders[res.Value - 1];
+        string projectName = Path.GetFileName(selectedFolder);
+        string jsonPath = Path.Combine(selectedFolder, projectName + ".json");
+
+        if (!File.Exists(jsonPath))
+        {
+            ed.WriteMessage($"\nError: JSON not found: {jsonPath}");
+            return;
+        }
+
+        // Load JSON
+        ProjectData data;
+        try
+        {
+            string jsonText = File.ReadAllText(jsonPath);
+            data = JsonConvert.DeserializeObject<ProjectData>(jsonText);
+        }
+        catch (System.Exception ex)
+        {
+            ed.WriteMessage($"\nFailed to parse JSON: {ex.Message}");
+            return;
+        }
+
+        ed.WriteMessage($"\nLoaded project: {data.name}");
+        ed.WriteMessage($"\nPoint count: {data.attributes.pointCount}");
+        ed.WriteMessage($"\nPoint labels: {string.Join(", ", data.attributes.points.Keys.OrderBy(k => k))}");
+
+        ed.WriteMessage("\nDimensions:");
+        foreach (var kv in data.attributes.dimensions.OrderBy(kvp => kvp.Key))
+        {
+            ed.WriteMessage($"\n  {kv.Key}: {kv.Value} mm");
+        }
+        ed.WriteMessage($"\nExit point: {data.attributes.exitPoint}");
+
+        // (Optional: save this folder path for storing DWG later)
+        /*
+        doc.UserData = new Dictionary<string, object>
+        {
+            { "ProjectFolder", selectedFolder }
+        };
+        */
+
+        ed.WriteMessage("\nReady to proceed with drawing matching.");
+
+        ed.WriteMessage("\nPlease select patern.");
+
+
+    }
+
+
 }
 
 
