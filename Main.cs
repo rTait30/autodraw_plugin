@@ -927,6 +927,51 @@ public class JsonListCommand : IExtensionApplication
 
     }
 
+    [CommandMethod("SumSelectedLineLengths")]
+    public void SumSelectedLineLengths()
+    {
+        Document doc = Application.DocumentManager.MdiActiveDocument;
+        Editor ed = doc.Editor;
+        Database db = doc.Database;
+
+        // Prompt user to select lines
+        PromptSelectionOptions opts = new PromptSelectionOptions
+        {
+            MessageForAdding = "\nSelect lines to sum their lengths:"
+        };
+
+        // Filter for LINE entities only
+        TypedValue[] filterValues = new TypedValue[]
+        {
+        new TypedValue((int)DxfCode.Start, "LINE")
+        };
+        SelectionFilter filter = new SelectionFilter(filterValues);
+
+        PromptSelectionResult selResult = ed.GetSelection(opts, filter);
+        if (selResult.Status != PromptStatus.OK)
+        {
+            ed.WriteMessage("\nNo lines selected.");
+            return;
+        }
+
+        SelectionSet ss = selResult.Value;
+        double totalLength = 0.0;
+
+        using (Transaction tr = db.TransactionManager.StartTransaction())
+        {
+            foreach (ObjectId id in ss.GetObjectIds())
+            {
+                Line line = tr.GetObject(id, OpenMode.ForRead) as Line;
+                if (line != null)
+                {
+                    totalLength += line.Length;
+                }
+            }
+            tr.Commit();
+        }
+
+        ed.WriteMessage($"\nTotal length of selected lines: {totalLength:0.##}");
+    }
 
 }
 
