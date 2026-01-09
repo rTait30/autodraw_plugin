@@ -1093,7 +1093,7 @@ namespace ProductDesignPlugin
     {
         private static readonly HttpClient client = new HttpClient();
 
-        [CommandMethod("AD_LOGIN")] // Renamed from SHADE_LOGIN
+        [CommandMethod("ADLOGIN")] // Renamed from SHADE_LOGIN
         public async void LoginCmd()
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
@@ -1133,7 +1133,28 @@ namespace ProductDesignPlugin
                     PluginSession.SetSession(data.access_token, data.username);
 
                     ed.WriteMessage($"\n--- SUCCESS: Logged in as {data.username} ---");
+
+                    Database db = doc.Database;
+
+                    // Lock the document before making changes
+                    using (DocumentLock docLock = doc.LockDocument())
+                    using (Transaction tr = db.TransactionManager.StartTransaction())
+                    {
+                        BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                        BlockTableRecord btr = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
+
+                        MText mtext = new MText();
+                        mtext.TextHeight = 1000;
+                        mtext.Contents = $"Hello {data.username}, {data.role}";
+                        mtext.Location = new Point3d(0, 0, 0);
+
+                        btr.AppendEntity(mtext);
+                        tr.AddNewlyCreatedDBObject(mtext, true);
+
+                        tr.Commit();
+                    }
                 }
+
                 else
                 {
                     ed.WriteMessage($"\nLogin Failed: {response.StatusCode}");
@@ -1145,7 +1166,8 @@ namespace ProductDesignPlugin
             }
         }
 
-        [CommandMethod("AD_STATUS")]
+
+        [CommandMethod("ADSTATUS")]
         public void CheckStatus()
         {
             Editor ed = Application.DocumentManager.MdiActiveDocument.Editor;
@@ -1161,7 +1183,7 @@ namespace ProductDesignPlugin
     {
         private static readonly HttpClient client = new HttpClient();
 
-        [CommandMethod("AD_IMPORT_GEO")] // Renamed from SHADE_GET_GEO
+        [CommandMethod("ADSTART")] // Renamed from SHADE_GET_GEO
         public async void ImportGeometryCmd()
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
@@ -1169,7 +1191,7 @@ namespace ProductDesignPlugin
 
             if (!PluginSession.IsLoggedIn)
             {
-                ed.WriteMessage("\nPlease login first (AD_LOGIN).");
+                ed.WriteMessage("\nPlease login first (ADLOGIN).");
                 return;
             }
 
@@ -1229,7 +1251,7 @@ namespace ProductDesignPlugin
                     ed.WriteMessage($"\nRequest Failed: {response.StatusCode}");
                 }
             }
-            catch (Exception ex)
+            catch (Exception ex) 
             {
                 ed.WriteMessage($"\nError: {ex.Message}");
             }
@@ -1317,7 +1339,7 @@ namespace ProductDesignPlugin
                     }
                 }
 
-                // --- 2. Draw all lines on AD_WORK_LINE, just below, and a line between the 2 highest workpoints ---
+                // --- 2. Draw all lines on ADWORK_LINE, just below, and a line between the 2 highest workpoints ---
                 if (minY.HasValue && maxY.HasValue)
                 {
                     double padding = 200.0; // You can adjust this value
@@ -1325,7 +1347,7 @@ namespace ProductDesignPlugin
 
                     EnsureLayerExists(tr, db, "AD_WORK_LINE");
 
-                    // 1. Draw all lines on AD_WORK_LINE
+                    // 1. Draw all lines on ADWORK_LINE
                     foreach (JObject item in data)
                     {
                         string origLayer = item["dxfattribs"]?["layer"]?.ToString() ?? "";
@@ -1346,15 +1368,11 @@ namespace ProductDesignPlugin
                         btr.AppendEntity(workLine);
                         tr.AddNewlyCreatedDBObject(workLine, true);
                     }
-
-
-
                 }
-
 
                 tr.Commit();
                 ed.WriteMessage($"\n--- SUCCESS: Imported {count} objects with Offset ({offset.X}, {offset.Y}) ---");
-                ed.WriteMessage($"\n--- Also drew lines on AD_WORK_LINE below original drawing. ---");
+                ed.WriteMessage($"\n--- Also drew lines on ADWORK_LINE below original drawing. ---");
             }
         }
 
@@ -1387,7 +1405,7 @@ namespace ProductDesignPlugin
 
     public class ProjectListCommands
     {
-        [CommandMethod("AD_LIST")]
+        [CommandMethod("ADLIST")]
         public async void ListProjectsInDesign()
         {
             Editor ed = Application.DocumentManager.MdiActiveDocument.Editor;
