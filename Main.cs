@@ -13,7 +13,13 @@ using System.Text;
 using System.Net.Http.Headers;
 using Newtonsoft.Json.Linq;
 
+using DbPolyline = Autodesk.AutoCAD.DatabaseServices.Polyline;
+
 using Exception = System.Exception;
+
+using Autodesk.AutoCAD.GraphicsInterface;
+
+using GraphicsPolyline = Autodesk.AutoCAD.GraphicsInterface.Polyline;
 
 public class JsonListCommand : IExtensionApplication
 {
@@ -345,7 +351,7 @@ public class JsonListCommand : IExtensionApplication
             if (nestData != null && fabricWidth > 0)
             {
                 double nestBoxY = - fabricWidth - margin;
-                Polyline fabric = new Polyline(4);
+                DbPolyline fabric = new DbPolyline(4);
                 fabric.AddVertexAt(0, new Point2d(0, nestBoxY), 0, 0, 0);
                 fabric.AddVertexAt(1, new Point2d(nestData.TotalWidth, nestBoxY), 0, 0, 0);
                 fabric.AddVertexAt(2, new Point2d(nestData.TotalWidth, nestBoxY + fabricWidth), 0, 0, 0);
@@ -552,7 +558,7 @@ public class JsonListCommand : IExtensionApplication
                     double totalWidth = config.Quantity * unitWidth;
 
                     // === Draw fabric background ===
-                    Polyline fabric = new Polyline(4);
+                    DbPolyline fabric = new DbPolyline(4);
                     fabric.AddVertexAt(0, new Point2d(0, 0), 0, 0, 0);
                     fabric.AddVertexAt(1, new Point2d(totalWidth, 0), 0, 0, 0);
                     fabric.AddVertexAt(2, new Point2d(totalWidth, fabricHeight), 0, 0, 0);
@@ -634,7 +640,7 @@ public class JsonListCommand : IExtensionApplication
                 double totalWidth = config.Quantity * unitWidth;
 
                 // Draw fabric background
-                Polyline fabric = new Polyline(4);
+                DbPolyline fabric = new DbPolyline(4);
                 fabric.AddVertexAt(0, new Point2d(0, 0), 0, 0, 0);
                 fabric.AddVertexAt(1, new Point2d(totalWidth, 0), 0, 0, 0);
                 fabric.AddVertexAt(2, new Point2d(totalWidth, fabricHeight), 0, 0, 0);
@@ -689,7 +695,7 @@ public class JsonListCommand : IExtensionApplication
         foreach (var (label, panelWidth) in panels)
         {
             Point2d pt = new Point2d(x, baseY);
-            Polyline rect = new Polyline(4);
+            DbPolyline rect = new DbPolyline(4);
             rect.AddVertexAt(0, pt, 0, 0, 0);
             rect.AddVertexAt(1, new Point2d(pt.X + panelWidth, pt.Y), 0, 0, 0);
             rect.AddVertexAt(2, new Point2d(pt.X + panelWidth, pt.Y + panelHeight), 0, 0, 0);
@@ -785,7 +791,7 @@ public class JsonListCommand : IExtensionApplication
 
             foreach (ObjectId id in ss.GetObjectIds())
             {
-                Polyline pline = tr.GetObject(id, OpenMode.ForRead) as Polyline;
+                DbPolyline pline = tr.GetObject(id, OpenMode.ForRead) as DbPolyline;
                 if (pline == null) continue;
 
                 count++;
@@ -1022,7 +1028,7 @@ public class UserPromptExample
                     break;
 
                 case "3":
-                    Polyline rect = new Polyline();
+                    DbPolyline rect = new DbPolyline();
                     rect.AddVertexAt(0, new Point2d(0, 0), 0, 0, 0);
                     rect.AddVertexAt(1, new Point2d(0, 1000), 0, 0, 0);
                     rect.AddVertexAt(2, new Point2d(2000, 1000), 0, 0, 0);
@@ -1062,6 +1068,48 @@ namespace ProductDesignPlugin
         public string role { get; set; }
         public string username { get; set; }
         public bool verified { get; set; }
+    }
+
+    public class ProjectDetails
+    {
+        public int id { get; set; }
+
+        public Product product { get; set; }
+        public ProjectGeneralInfo general { get; set; }
+
+        public string info ()
+        {
+
+            string info = "Project id: " + id + "\n" + product.info() + "\n" + general.info();
+
+            return info;
+        }
+    }
+
+    public class Product
+
+    {
+        public int id { get; set; }
+        public string name { get; set; }
+
+        public string info()
+        {
+            return "Product ID: " + id + " (" + name + ")";
+        }
+    }
+
+    public class ProjectGeneralInfo
+    {
+        public string client_id { get; set; }
+        public string client_name { get; set; }
+
+        public string name { get; set; }
+
+        public string info()
+        {
+            return "Project name: " + name + " | Client: " + client_id + " (" + client_name + ")";
+        }
+
     }
 
     public class GeometryRequest
@@ -1183,7 +1231,7 @@ namespace ProductDesignPlugin
     {
         private static readonly HttpClient client = new HttpClient();
 
-        [CommandMethod("ADSTART")] // Renamed from SHADE_GET_GEO
+        [CommandMethod("ADSTARTOLD")] // Renamed from SHADE_GET_GEO
         public async void ImportGeometryCmd()
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
@@ -1255,6 +1303,59 @@ namespace ProductDesignPlugin
             {
                 ed.WriteMessage($"\nError: {ex.Message}");
             }
+        }
+
+
+
+        [CommandMethod("ADSTART")]
+        public async void StartAutoDraw()
+        {
+
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            Editor ed = doc.Editor;
+
+            if (!PluginSession.IsLoggedIn)
+            {
+                ed.WriteMessage("\nPlease login first (ADLOGIN).");
+                return;
+            }
+
+            try
+            {
+                // A. GET PROJECT ID
+                PromptStringOptions idOpts = new PromptStringOptions("\nEnter Project ID: ");
+                idOpts.AllowSpaces = false;
+                PromptResult idRes = ed.GetString(idOpts);
+                if (idRes.Status != PromptStatus.OK) return;
+
+                // B. FETCH PROJECT DETAILS
+
+                string url = $"{PluginSession.BaseUrl}/project/{idRes.StringResult}";
+
+                ed.WriteMessage($"URL: {url}");
+
+                client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", PluginSession.AuthToken);
+
+                ed.WriteMessage("\nFetching project...");
+                HttpResponseMessage response = await client.GetAsync(url);
+
+
+                string json = await client.GetStringAsync(url);
+                ProjectDetails obj = JsonConvert.DeserializeObject<ProjectDetails>(json);
+
+                ed.WriteMessage($"{obj.info()}");
+
+
+            }
+
+
+
+            catch (Exception ex)
+            {
+                ed.WriteMessage($"\nError: {ex.Message}");
+            }
+
+
         }
 
         private void DrawFromJSON(Document doc, JArray data, Point3d offset)
@@ -1516,4 +1617,286 @@ namespace ProductDesignPlugin
             }
         }
     }
+
+    public class DynamicLineDemo
+    {
+        [CommandMethod("MoveLineRandomGrid")]
+        public void MoveLineRandomGrid()
+        {
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            Editor ed = doc.Editor;
+            Database db = doc.Database;
+
+            // Grid settings
+            int gridSize = 200;
+            int cellSize = 100;
+            int steps = 1000;
+
+            // Draw the bounding box once
+            using (DocumentLock docLock = doc.LockDocument())
+            using (Transaction tr = db.TransactionManager.StartTransaction())
+            {
+                BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                BlockTableRecord btr = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
+
+                DbPolyline box = new DbPolyline(4);
+                box.AddVertexAt(0, new Point2d(0, 0), 0, 0, 0);
+                box.AddVertexAt(1, new Point2d(gridSize * cellSize, 0), 0, 0, 0);
+                box.AddVertexAt(2, new Point2d(gridSize * cellSize, gridSize * cellSize), 0, 0, 0);
+                box.AddVertexAt(3, new Point2d(0, gridSize * cellSize), 0, 0, 0);
+                box.Closed = true;
+                box.ColorIndex = 1; // Red
+                btr.AppendEntity(box);
+                tr.AddNewlyCreatedDBObject(box, true);
+
+                tr.Commit();
+            }
+
+            // Start at the center of the grid
+            int x = gridSize / 2;
+            int y = gridSize / 2;
+            ObjectId lineId = ObjectId.Null;
+            Random rand = new Random();
+
+            for (int i = 0; i < steps; i++)
+            {
+                // Choose a random direction: 0=up, 1=down, 2=left, 3=right
+                int dir = rand.Next(4);
+                switch (dir)
+                {
+                    case 0: if (y < gridSize - 1) y++; break; // up
+                    case 1: if (y > 0) y--; break;            // down
+                    case 2: if (x > 0) x--; break;            // left
+                    case 3: if (x < gridSize - 1) x++; break; // right
+                }
+
+                Point3d start = new Point3d(x * cellSize, y * cellSize, 0);
+                Point3d end = new Point3d(start.X + cellSize, start.Y, 0); // Horizontal segment
+
+                using (DocumentLock docLock = doc.LockDocument())
+                using (Transaction tr = db.TransactionManager.StartTransaction())
+                {
+                    BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                    BlockTableRecord btr = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
+
+                    Line line = new Line(start, end);
+                    line.ColorIndex = 2; // Yellow
+                    line.LineWeight = LineWeight.LineWeight200;
+                    lineId = btr.AppendEntity(line);
+                    tr.AddNewlyCreatedDBObject(line, true);
+
+                    tr.Commit();
+                }
+
+                Application.UpdateScreen();
+                ed.Regen();
+                ed.WriteMessage($"\nStep {i + 1}: Line at grid ({x},{y})");
+
+                System.Threading.Thread.Sleep(33);
+
+                // Erase previous line
+                using (DocumentLock docLock = doc.LockDocument())
+                using (Transaction tr = db.TransactionManager.StartTransaction())
+                {
+                    if (!lineId.IsNull)
+                    {
+                        Entity ent = tr.GetObject(lineId, OpenMode.ForWrite) as Entity;
+                        if (ent != null)
+                            ent.Erase();
+                    }
+                    tr.Commit();
+                }
+            }
+        }
+
+        [CommandMethod("MoveLineMouseGrid")]
+        public void MoveLineMouseGrid()
+        {
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            Editor ed = doc.Editor;
+            Database db = doc.Database;
+
+            int gridSize = 20;
+            int cellSize = 100;
+            int steps = 10;
+
+            // Draw the bounding box once
+            using (DocumentLock docLock = doc.LockDocument())
+            using (Transaction tr = db.TransactionManager.StartTransaction())
+            {
+                BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                BlockTableRecord btr = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
+
+                DbPolyline box = new DbPolyline(4);
+                box.AddVertexAt(0, new Point2d(0, 0), 0, 0, 0);
+                box.AddVertexAt(1, new Point2d(gridSize * cellSize, 0), 0, 0, 0);
+                box.AddVertexAt(2, new Point2d(gridSize * cellSize, gridSize * cellSize), 0, 0, 0);
+                box.AddVertexAt(3, new Point2d(0, gridSize * cellSize), 0, 0, 0);
+                box.Closed = true;
+                box.ColorIndex = 1; // Red
+                btr.AppendEntity(box);
+                tr.AddNewlyCreatedDBObject(box, true);
+
+                tr.Commit();
+            }
+
+            int x = gridSize / 2;
+            int y = gridSize / 2;
+            ObjectId lineId = ObjectId.Null;
+
+            // Gamepad layout (centered below grid)
+            int padBoxSize = cellSize;
+            int padSpacing = cellSize / 4;
+            int padCenterX = gridSize * cellSize / 2;
+            int padCenterY = gridSize * cellSize + padBoxSize * 2 + padSpacing;
+
+            // Box centers: Up, Down, Left, Right (relative to pad center)
+            Point3d[] padCenters = new[]
+            {
+        new Point3d(padCenterX, padCenterY + padBoxSize + padSpacing, 0), // Up
+        new Point3d(padCenterX, padCenterY - padBoxSize - padSpacing, 0), // Down
+        new Point3d(padCenterX - padBoxSize - padSpacing, padCenterY, 0), // Left
+        new Point3d(padCenterX + padBoxSize + padSpacing, padCenterY, 0), // Right
+    };
+
+            // Arrow directions for each box
+            Vector3d[] arrowDirs = new[]
+            {
+        new Vector3d(0, 1, 0),   // Up
+        new Vector3d(0, -1, 0),  // Down
+        new Vector3d(-1, 0, 0),  // Left
+        new Vector3d(1, 0, 0),   // Right
+    };
+
+            for (int i = 0; i < steps; i++)
+            {
+                // Draw transient selection boxes and arrows
+                List<TransientDrawable> transients = new List<TransientDrawable>();
+                for (int d = 0; d < 4; d++)
+                {
+                    // Draw box
+                    Point3d c = padCenters[d];
+                    Point3d[] corners = new[]
+                    {
+                new Point3d(c.X - padBoxSize / 2, c.Y - padBoxSize / 2, 0),
+                new Point3d(c.X + padBoxSize / 2, c.Y - padBoxSize / 2, 0),
+                new Point3d(c.X + padBoxSize / 2, c.Y + padBoxSize / 2, 0),
+                new Point3d(c.X - padBoxSize / 2, c.Y + padBoxSize / 2, 0),
+                new Point3d(c.X - padBoxSize / 2, c.Y - padBoxSize / 2, 0)
+            };
+                    for (int j = 0; j < 4; j++)
+                        transients.Add(new TransientDrawable(new Line(corners[j], corners[j + 1])));
+
+                    // Draw arrow
+                    Point3d arrowStart = c;
+                    Point3d arrowEnd = c + arrowDirs[d] * (padBoxSize / 2 - 15);
+                    transients.Add(new TransientDrawable(new Line(arrowStart, arrowEnd)));
+                    // Arrow head
+                    Vector3d headDir = arrowDirs[d];
+                    Vector3d left = headDir.RotateBy(Math.PI * 3 / 4, Vector3d.ZAxis).GetNormal() * (padBoxSize / 6);
+                    Vector3d right = headDir.RotateBy(-Math.PI * 3 / 4, Vector3d.ZAxis).GetNormal() * (padBoxSize / 6);
+                    transients.Add(new TransientDrawable(new Line(arrowEnd, arrowEnd + left)));
+                    transients.Add(new TransientDrawable(new Line(arrowEnd, arrowEnd + right)));
+                }
+
+                // Prompt user to click a box
+                PromptPointOptions ppo = new PromptPointOptions($"\nStep {i + 1}: Click a direction box (ESC to quit):");
+                PromptPointResult ppr = ed.GetPoint(ppo);
+
+                // Remove transients
+                foreach (var t in transients) t.Dispose();
+
+                if (ppr.Status != PromptStatus.OK)
+                {
+                    ed.WriteMessage("\nCancelled by user.");
+                    break;
+                }
+
+                // Find which box the click is inside
+                int chosen = -1;
+                for (int d = 0; d < 4; d++)
+                {
+                    Point3d c = padCenters[d];
+                    if (Math.Abs(ppr.Value.X - c.X) <= padBoxSize / 2 && Math.Abs(ppr.Value.Y - c.Y) <= padBoxSize / 2)
+                    {
+                        chosen = d;
+                        break;
+                    }
+                }
+                if (chosen == -1)
+                {
+                    ed.WriteMessage("\nClick was not inside any direction box. Try again.");
+                    i--;
+                    continue;
+                }
+
+                // Move according to chosen direction
+                switch (chosen)
+                {
+                    case 0: if (y < gridSize - 1) y++; break; // Up
+                    case 1: if (y > 0) y--; break;            // Down
+                    case 2: if (x > 0) x--; break;            // Left
+                    case 3: if (x < gridSize - 1) x++; break; // Right
+                }
+
+                Point3d start = new Point3d(x * cellSize, y * cellSize, 0);
+                Point3d end = new Point3d(start.X + cellSize, start.Y, 0); // Horizontal segment
+
+                using (DocumentLock docLock = doc.LockDocument())
+                using (Transaction tr = db.TransactionManager.StartTransaction())
+                {
+                    BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                    BlockTableRecord btr = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
+
+                    Line line = new Line(start, end);
+                    line.ColorIndex = 2; // Yellow
+                    line.LineWeight = LineWeight.LineWeight200;
+                    lineId = btr.AppendEntity(line);
+                    tr.AddNewlyCreatedDBObject(line, true);
+
+                    tr.Commit();
+                }
+
+                Application.UpdateScreen();
+                ed.Regen();
+                ed.WriteMessage($"\nStep {i + 1}: Line at grid ({x},{y})");
+
+                System.Threading.Thread.Sleep(300);
+
+                // Erase previous line
+                using (DocumentLock docLock = doc.LockDocument())
+                using (Transaction tr = db.TransactionManager.StartTransaction())
+                {
+                    if (!lineId.IsNull)
+                    {
+                        Entity ent = tr.GetObject(lineId, OpenMode.ForWrite) as Entity;
+                        if (ent != null)
+                            ent.Erase();
+                    }
+                    tr.Commit();
+                }
+            }
+        }
+
+
+
+    }
 }
+
+// Helper for transient arrow drawing
+class TransientDrawable : IDisposable
+{
+    private readonly Line _line;
+    public TransientDrawable(Line line)
+    {
+        _line = line;
+        Autodesk.AutoCAD.GraphicsInterface.TransientManager.CurrentTransientManager.AddTransient(
+            _line, TransientDrawingMode.DirectShortTerm, 128, new IntegerCollection());
+    }
+    public void Dispose()
+    {
+        Autodesk.AutoCAD.GraphicsInterface.TransientManager.CurrentTransientManager.EraseTransient(_line, new IntegerCollection());
+        _line.Dispose();
+    }
+}
+
