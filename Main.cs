@@ -13,13 +13,14 @@ using System.Text;
 using System.Net.Http.Headers;
 using Newtonsoft.Json.Linq;
 
-using DbPolyline = Autodesk.AutoCAD.DatabaseServices.Polyline;
+using DBPolyline = Autodesk.AutoCAD.DatabaseServices.Polyline;
 
 using Exception = System.Exception;
 
 using Autodesk.AutoCAD.GraphicsInterface;
 
 using GraphicsPolyline = Autodesk.AutoCAD.GraphicsInterface.Polyline;
+using System.IO;
 
 public class JsonListCommand : IExtensionApplication
 {
@@ -351,7 +352,7 @@ public class JsonListCommand : IExtensionApplication
             if (nestData != null && fabricWidth > 0)
             {
                 double nestBoxY = - fabricWidth - margin;
-                DbPolyline fabric = new DbPolyline(4);
+                DBPolyline fabric = new DBPolyline(4);
                 fabric.AddVertexAt(0, new Point2d(0, nestBoxY), 0, 0, 0);
                 fabric.AddVertexAt(1, new Point2d(nestData.TotalWidth, nestBoxY), 0, 0, 0);
                 fabric.AddVertexAt(2, new Point2d(nestData.TotalWidth, nestBoxY + fabricWidth), 0, 0, 0);
@@ -558,7 +559,7 @@ public class JsonListCommand : IExtensionApplication
                     double totalWidth = config.Quantity * unitWidth;
 
                     // === Draw fabric background ===
-                    DbPolyline fabric = new DbPolyline(4);
+                    DBPolyline fabric = new DBPolyline(4);
                     fabric.AddVertexAt(0, new Point2d(0, 0), 0, 0, 0);
                     fabric.AddVertexAt(1, new Point2d(totalWidth, 0), 0, 0, 0);
                     fabric.AddVertexAt(2, new Point2d(totalWidth, fabricHeight), 0, 0, 0);
@@ -640,7 +641,7 @@ public class JsonListCommand : IExtensionApplication
                 double totalWidth = config.Quantity * unitWidth;
 
                 // Draw fabric background
-                DbPolyline fabric = new DbPolyline(4);
+                DBPolyline fabric = new DBPolyline(4);
                 fabric.AddVertexAt(0, new Point2d(0, 0), 0, 0, 0);
                 fabric.AddVertexAt(1, new Point2d(totalWidth, 0), 0, 0, 0);
                 fabric.AddVertexAt(2, new Point2d(totalWidth, fabricHeight), 0, 0, 0);
@@ -695,7 +696,7 @@ public class JsonListCommand : IExtensionApplication
         foreach (var (label, panelWidth) in panels)
         {
             Point2d pt = new Point2d(x, baseY);
-            DbPolyline rect = new DbPolyline(4);
+            DBPolyline rect = new DBPolyline(4);
             rect.AddVertexAt(0, pt, 0, 0, 0);
             rect.AddVertexAt(1, new Point2d(pt.X + panelWidth, pt.Y), 0, 0, 0);
             rect.AddVertexAt(2, new Point2d(pt.X + panelWidth, pt.Y + panelHeight), 0, 0, 0);
@@ -791,7 +792,7 @@ public class JsonListCommand : IExtensionApplication
 
             foreach (ObjectId id in ss.GetObjectIds())
             {
-                DbPolyline pline = tr.GetObject(id, OpenMode.ForRead) as DbPolyline;
+                DBPolyline pline = tr.GetObject(id, OpenMode.ForRead) as DBPolyline;
                 if (pline == null) continue;
 
                 count++;
@@ -1028,7 +1029,7 @@ public class UserPromptExample
                     break;
 
                 case "3":
-                    DbPolyline rect = new DbPolyline();
+                    DBPolyline rect = new DBPolyline();
                     rect.AddVertexAt(0, new Point2d(0, 0), 0, 0, 0);
                     rect.AddVertexAt(1, new Point2d(0, 1000), 0, 0, 0);
                     rect.AddVertexAt(2, new Point2d(2000, 1000), 0, 0, 0);
@@ -1125,7 +1126,7 @@ namespace ProductDesignPlugin
         public static string CurrentUser { get; private set; }
 
         // TODO: Update to your real API URL
-        public static string BaseUrl { get; } = "http://localhost:5173/copelands/api";
+        public static string BaseUrl { get; } = "http://127.0.0.1:5001/copelands/api";
 
         public static void SetSession(string token, string user)
         {
@@ -1194,7 +1195,7 @@ namespace ProductDesignPlugin
                         MText mtext = new MText();
                         mtext.TextHeight = 1000;
                         mtext.Contents = $"Hello {data.username}, {data.role}";
-                        mtext.Location = new Point3d(0, 0, 0);
+                        mtext.Location = new Point3d(0, 2000, 0);
 
                         btr.AppendEntity(mtext);
                         tr.AddNewlyCreatedDBObject(mtext, true);
@@ -1227,10 +1228,12 @@ namespace ProductDesignPlugin
     }
 
     // --- 4. GEOMETRY COMMANDS (Generic) ---
+
+
     public class GeometryCommands
     {
-        private static readonly HttpClient client = new HttpClient();
-
+        //private static readonly HttpClient client = new HttpClient();
+    
         [CommandMethod("ADSTARTOLD")] // Renamed from SHADE_GET_GEO
         public async void ImportGeometryCmd()
         {
@@ -1305,57 +1308,482 @@ namespace ProductDesignPlugin
             }
         }
 
+        // 2. LOCAL STORAGE (Static so it persists between commands)
+        public static int CurrentProjectId = 0;
+        public static ProjectDetails CurrentProjectData = null;
 
-
-        [CommandMethod("ADSTART")]
-        public async void StartAutoDraw()
+        // ROOT OBJECT
+        public class ProjectDetails
         {
+            public object project_attributes { get; set; }
+            public object product_attributes { get; set; }
+            public AutoDrawConfig autodraw_config { get; set; }
+            public AutoDrawMeta autodraw_meta { get; set; }
+            public AutoDrawRecord autodraw_record { get; set; } // Keep as generic object for now
+        }
 
-            Document doc = Application.DocumentManager.MdiActiveDocument;
-            Editor ed = doc.Editor;
+        // META DATA
+        public class AutoDrawMeta
+        {
+            public int current_step { get; set; }
+            public int current_substep { get; set; }
+            public bool is_complete { get; set; }
+            public string last_updated { get; set; }
+        }
 
-            if (!PluginSession.IsLoggedIn)
+        // CONFIG STRUCTURE
+        public class AutoDrawConfig
+        {
+            public int stepCount { get; set; }
+            public List<ConfigStep> steps { get; set; }
+        }
+
+        public class ConfigStep
+        {
+            public string key { get; set; }
+            public string label { get; set; }
+            // NEW: The rules for what to draw in this step
+            public List<ShowRule> show { get; set; }
+            public List<ConfigSubstep> substeps { get; set; }
+        }
+
+        public class ShowRule
+        {
+            public string query { get; set; } // e.g., "ad_layer"
+            public string value { get; set; } // e.g., "AD_STRUCTURE"
+        }
+
+        public class ConfigSubstep
+        {
+            public string key { get; set; }
+            public string label { get; set; }
+            public string method { get; set; }
+            public bool automated { get; set; }
+        }
+
+        // --- TOP LEVEL RECORD ---
+        public class AutoDrawRecord
+        {
+            public string created_at { get; set; }
+
+            // This list can now hold LineItems, CircleItems, etc. mixed together
+            public List<GeometryItem> geometry { get; set; }
+        }
+
+        // This tells Newtonsoft: "Use this class to decide what object to create"
+        public class GeometryItemConverter : JsonConverter
+        {
+            public override bool CanConvert(Type objectType)
             {
-                ed.WriteMessage("\nPlease login first (ADLOGIN).");
-                return;
+                return (objectType == typeof(GeometryItem));
+            }
+
+            public override object ReadJson(JsonReader reader, Type objectType, object existingValue, JsonSerializer serializer)
+            {
+                // 1. Load the data into a generic JSON Object
+                JObject jo = JObject.Load(reader);
+
+                // 2. Read the "type" property
+                string type = (string)jo["type"];
+                GeometryItem item = null;
+
+                // 3. Decide which class to instantiate
+                switch (type)
+                {
+                    case "geo_line":
+                        item = new LineItem();
+                        break;
+                    // Add cases here as you expand (e.g., "geo_circle")
+                    // case "geo_circle": 
+                    //    item = new CircleItem(); 
+                    //    break;
+                    default:
+                        // Fallback if we don't recognize the type
+                        item = new GeometryItem();
+                        break;
+                }
+
+                // 4. Fill the empty object with the data
+                serializer.Populate(jo.CreateReader(), item);
+                return item;
+            }
+
+            public override bool CanWrite => false; // We only need this for reading
+            public override void WriteJson(JsonWriter writer, object value, JsonSerializer serializer) => throw new NotImplementedException();
+        }
+
+        // --- BASE CLASS (Abstract) ---
+        // The [JsonConverter] tag connects the "Traffic Cop" we wrote above
+        [JsonConverter(typeof(GeometryItemConverter))]
+        public class GeometryItem
+        {
+            public string id { get; set; }
+            public string key { get; set; }
+            public string layer { get; set; }
+            public int product_index { get; set; }
+            public List<string> tags { get; set; }
+            public string type { get; set; } // "geo_line"
+        }
+
+        // --- TYPE 1: LINE ---
+        public class LineItem : GeometryItem
+        {
+            // Strongly typed attributes specifically for Lines
+            public LineAttributes attributes { get; set; }
+        }
+
+        public class LineAttributes
+        {
+            public double[] start { get; set; }
+            public double[] end { get; set; }
+
+            // Helper to get AutoCAD points directly
+            public Point3d StartPoint => new Point3d(start[0], start[1], start.Length > 2 ? start[2] : 0);
+            public Point3d EndPoint => new Point3d(end[0], end[1], end.Length > 2 ? end[2] : 0);
+        }
+
+        // Reusing your client instance
+        private static readonly HttpClient client = new HttpClient();
+
+        public class Commands
+        {
+            public static int CurrentProjectId = 0;
+            public static ProjectDetails CurrentProjectData = null;
+            private static readonly HttpClient client = new HttpClient();
+
+            [CommandMethod("ADSTART")]
+            public async void StartAutoDraw()
+            {
+                Document doc = Application.DocumentManager.MdiActiveDocument;
+                Editor ed = doc.Editor;
+                Database db = doc.Database;
+
+                if (!PluginSession.IsLoggedIn) { ed.WriteMessage("\nPlease login first (ADLOGIN)."); return; }
+
+                try
+                {
+                    // A. GET ID
+                    PromptStringOptions idOpts = new PromptStringOptions("\nEnter Project ID: ");
+                    idOpts.AllowSpaces = false;
+                    PromptResult idRes = ed.GetString(idOpts);
+                    if (idRes.Status != PromptStatus.OK) return;
+                    CurrentProjectId = int.Parse(idRes.StringResult);
+
+                    // B. FETCH
+                    string url = $"{PluginSession.BaseUrl}/automation/start/{CurrentProjectId}";
+                    client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", PluginSession.AuthToken);
+                    string json = await client.GetStringAsync(url);
+                    CurrentProjectData = JsonConvert.DeserializeObject<ProjectDetails>(json);
+
+                    // C. DRAW
+                    using (DocumentLock docLock = doc.LockDocument())
+                    {
+                        using (Transaction tr = db.TransactionManager.StartTransaction())
+                        {
+                            BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                            BlockTableRecord btr = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
+
+                            // 1. DRAW STATUS BOARD (Left Side)
+                            // Moved to -15,000 so it doesn't touch the big boxes
+                            DrawStatusBoard(tr, btr, CurrentProjectData.autodraw_config, CurrentProjectData.autodraw_meta, new Point3d(-15000, 0, 0));
+
+                            // 2. DRAW WORKFLOW BOXES (Center, Downwards)
+                            DrawWorkflowBoxes(tr, btr, CurrentProjectData.autodraw_config, CurrentProjectData.autodraw_meta, CurrentProjectData.autodraw_record);
+
+                            // 3. DRAW DEBUG ROW (Top, Rightwards)
+                            DrawDebugRow(tr, btr, CurrentProjectData);
+
+                            tr.Commit();
+                        }
+                    }
+                    ed.Regen();
+                }
+                catch (Exception ex)
+                {
+                    ed.WriteMessage($"\nError: {ex.Message}");
+                }
+            }
+
+            // --- 1. STATUS BOARD (Simple Text List) ---
+            private void DrawStatusBoard(Transaction tr, BlockTableRecord btr, AutoDrawConfig config, AutoDrawMeta meta, Point3d startPt)
+            {
+                double currentY = startPt.Y;
+                double stepGap = 1500;
+                double textHeightStep = 800;
+                double textHeightSub = 500;
+
+                MText header = new MText();
+                header.Contents = "{\\H1200;\\C3;Steps}";
+                header.Location = new Point3d(startPt.X, currentY + 2000, 0);
+                header.TextHeight = 1200;
+                btr.AppendEntity(header);
+                tr.AddNewlyCreatedDBObject(header, true);
+
+                for (int i = 0; i < config.steps.Count; i++)
+                {
+                    var step = config.steps[i];
+                    bool isCurrent = i == meta.current_step;
+                    bool isPast = i < meta.current_step;
+                    string colorCode = isPast ? "\\C3;" : (isCurrent ? "\\C7;" : "\\C252;");
+
+                    MText stepText = new MText();
+                    stepText.Contents = $"{colorCode}Step {i}: {step.label}";
+                    stepText.Location = new Point3d(startPt.X, currentY, 0);
+                    stepText.TextHeight = textHeightStep;
+                    btr.AppendEntity(stepText);
+                    tr.AddNewlyCreatedDBObject(stepText, true);
+
+                    currentY -= textHeightStep * 1.5;
+
+                    for (int j = 0; j < step.substeps.Count; j++)
+                    {
+                        bool isCurrentSub = (isCurrent && j == meta.current_substep);
+                        string prefix = isCurrentSub ? ">> " : "   ";
+
+                        MText subText = new MText();
+                        subText.Contents = $"{colorCode}{prefix}{step.substeps[j].label}";
+                        subText.Location = new Point3d(startPt.X + 1000, currentY, 0);
+                        subText.TextHeight = textHeightSub;
+                        btr.AppendEntity(subText);
+                        tr.AddNewlyCreatedDBObject(subText, true);
+
+                        currentY -= textHeightSub * 1.5;
+                    }
+                    currentY -= stepGap;
+                }
+            }
+
+            // --- 2. WORKFLOW BOXES (30k x 30k) ---
+            private void DrawWorkflowBoxes(Transaction tr, BlockTableRecord btr, AutoDrawConfig config, AutoDrawMeta meta, AutoDrawRecord record)
+            {
+                double boxSize = 30000;
+                double gap = 0;
+                double currentY = 0;
+
+                for (int i = 0; i < config.steps.Count; i++)
+                {
+                    var step = config.steps[i];
+                    Point3d stepOrigin = new Point3d(0, currentY, 0);
+                    bool isActiveStep = (i == meta.current_step);
+                    int colorIndex = isActiveStep ? 3 : 252; // Green or Gray
+
+                    // 1. Draw 30k Box
+                    DBPolyline box = new DBPolyline();
+                    box.AddVertexAt(0, new Point2d(0, currentY), 0, 0, 0);
+                    box.AddVertexAt(1, new Point2d(boxSize, currentY), 0, 0, 0);
+                    box.AddVertexAt(2, new Point2d(boxSize, currentY - boxSize), 0, 0, 0);
+                    box.AddVertexAt(3, new Point2d(0, currentY - boxSize), 0, 0, 0);
+                    box.Closed = true;
+                    box.ColorIndex = colorIndex;
+                    if (isActiveStep) box.ConstantWidth = 250; // Thicker border for active
+
+                    btr.AppendEntity(box);
+                    tr.AddNewlyCreatedDBObject(box, true);
+
+                    // 2. Draw Title inside box
+                    MText title = new MText();
+                    title.Contents = $"{{\\H500;Step {i}: {step.label}}}";
+                    title.Location = new Point3d(1000, currentY - 1000, 0);
+                    title.TextHeight = 500;
+                    title.ColorIndex = isActiveStep ? 1 : 7;
+                    btr.AppendEntity(title);
+                    tr.AddNewlyCreatedDBObject(title, true);
+
+                    // Define the Top-Left of this step's area
+                    
+
+
+                    if (record != null && record.geometry != null)
+                    {
+                        DrawStepGeometry(tr, btr, step, record.geometry, stepOrigin);
+                    }
+
+                    currentY -= (boxSize + gap);
+                }
+            }
+
+            // --- 3. DEBUG ROW (Horizontal to the right) ---
+            private void DrawDebugRow(Transaction tr, BlockTableRecord btr, ProjectDetails data)
+            {
+                double currentX = -100000;
+                double yPos = 0;
+                double gap = 0;
+
+                string pAttr = JsonConvert.SerializeObject(data.project_attributes, Formatting.Indented);
+                string prodAttr = JsonConvert.SerializeObject(data.product_attributes, Formatting.Indented);
+                string config = JsonConvert.SerializeObject(data.autodraw_config, Formatting.Indented);
+                string meta = JsonConvert.SerializeObject(data.autodraw_meta, Formatting.Indented);
+                string record = JsonConvert.SerializeObject(data.autodraw_record, Formatting.Indented);
+
+                // Draw side-by-side
+                currentX += DrawDebugBox(tr, btr, "project_attributes", pAttr, new Point3d(currentX, yPos, 0), 1) + gap;
+                currentX += DrawDebugBox(tr, btr, "product_attributes", prodAttr, new Point3d(currentX, yPos, 0), 2) + gap;
+                currentX += DrawDebugBox(tr, btr, "autodraw_config", config, new Point3d(currentX, yPos, 0), 3) + gap;
+                currentX += DrawDebugBox(tr, btr, "autodraw_meta", meta, new Point3d(currentX, yPos, 0), 4) + gap;
+                currentX += DrawDebugBox(tr, btr, "autodraw_record", record, new Point3d(currentX, yPos, 0), 6) + gap;
+            }
+
+            // Helper: Returns WIDTH of box
+            private double DrawDebugBox(Transaction tr, BlockTableRecord btr, string title, string content, Point3d position, int colorIndex)
+            {
+                MText mtext = new MText();
+                mtext.Contents = $"{{\\H400;\\C7;{title}}}\n\\P{content}";
+                mtext.Location = new Point3d(position.X + 200, position.Y - 200, 0); // Padding inside
+                mtext.TextHeight = 200.0;
+                mtext.Width = 0.0; // Infinite width (no wrap)
+
+                btr.AppendEntity(mtext);
+                tr.AddNewlyCreatedDBObject(mtext, true);
+
+                Extents3d ext = mtext.GeometricExtents;
+                double w = ext.MaxPoint.X - ext.MinPoint.X + 400;
+                double h = ext.MaxPoint.Y - ext.MinPoint.Y + 400;
+
+                DBPolyline box = new DBPolyline();
+                // Top-Left
+                box.AddVertexAt(0, new Point2d(position.X, position.Y), 0, 0, 0);
+                // Top-Right
+                box.AddVertexAt(1, new Point2d(position.X + w, position.Y), 0, 0, 0);
+                // Bottom-Right
+                box.AddVertexAt(2, new Point2d(position.X + w, position.Y - h), 0, 0, 0);
+                // Bottom-Left
+                box.AddVertexAt(3, new Point2d(position.X, position.Y - h), 0, 0, 0);
+
+                box.Closed = true;
+                box.ColorIndex = colorIndex;
+
+                btr.AppendEntity(box);
+                tr.AddNewlyCreatedDBObject(box, true);
+
+                return w;
+            }
+        }
+
+        /// <summary>
+        /// Draws the geometry for a specific step based on its "show" rules.
+        /// </summary>
+        /// <param name="tr">Active Transaction</param>
+        /// <param name="btr">ModelSpace Record</param>
+        /// <param name="step">The config for the current step</param>
+        /// <param name="allGeometry">The full list of geometry from the record</param>
+        /// <param name="offset">The Top-Left corner of the Step Box (e.g., 0, -35000)</param>
+        public static void DrawStepGeometry(Transaction tr, BlockTableRecord btr, ConfigStep step, List<GeometryItem> allGeometry, Point3d offset)
+        {
+            // --- DEBUG SETUP: Start writing text at the top-left of the box ---
+            double debugY = offset.Y - 2000; // Start slightly down from top
+            double debugX = offset.X + 1000; // Padding from left
+
+            // Local Helper to draw debug text quickly
+            void LogToModel(string msg, int color)
+            {
+                MText txt = new MText();
+                txt.Contents = msg;
+                txt.Location = new Point3d(debugX, debugY, 0);
+                txt.TextHeight = 400; // Readable size
+                txt.ColorIndex = color; // 1=Red, 3=Green, 7=White
+                btr.AppendEntity(txt);
+                tr.AddNewlyCreatedDBObject(txt, true);
+                debugY -= 600; // Move down for next line
             }
 
             try
             {
-                // A. GET PROJECT ID
-                PromptStringOptions idOpts = new PromptStringOptions("\nEnter Project ID: ");
-                idOpts.AllowSpaces = false;
-                PromptResult idRes = ed.GetString(idOpts);
-                if (idRes.Status != PromptStatus.OK) return;
+                // 1. Log Entry
+                LogToModel($"--- DEBUG: {step.label} ---", 7);
 
-                // B. FETCH PROJECT DETAILS
+                // 2. Check Rules
+                if (step.show == null || step.show.Count == 0)
+                {
+                    LogToModel("No 'show' rules defined. Exiting.", 1);
+                    return;
+                }
+                LogToModel($"Rules Found: {step.show.Count}", 7);
 
-                string url = $"{PluginSession.BaseUrl}/project/{idRes.StringResult}";
+                // 3. Check Geometry Count
+                if (allGeometry == null || allGeometry.Count == 0)
+                {
+                    LogToModel("No geometry in record. Exiting.", 1);
+                    return;
+                }
+                LogToModel($"Total Geometry Items: {allGeometry.Count}", 7);
 
-                ed.WriteMessage($"URL: {url}");
+                // 4. Iterate
+                int drawCount = 0;
+                foreach (var item in allGeometry)
+                {
+                    bool shouldDraw = false;
+                    string matchedRule = "";
 
-                client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", PluginSession.AuthToken);
+                    foreach (var rule in step.show)
+                    {
+                        // DEBUG: Log what we are comparing
+                        // LogToModel($"Checking: {item.layer} vs {rule.value}", 252); 
 
-                ed.WriteMessage("\nFetching project...");
-                HttpResponseMessage response = await client.GetAsync(url);
+                        if (rule.query == "ad_layer" && item.layer == rule.value)
+                        {
+                            shouldDraw = true;
+                            matchedRule = rule.value;
+                            break;
+                        }
+                    }
 
+                    if (shouldDraw)
+                    {
+                        // DEBUG: Found a match
+                        // LogToModel($"Match! Item Type: {item.GetType().Name}", 3);
 
-                string json = await client.GetStringAsync(url);
-                ProjectDetails obj = JsonConvert.DeserializeObject<ProjectDetails>(json);
+                        Entity ent = null;
 
-                ed.WriteMessage($"{obj.info()}");
+                        // 5. Type Check Debugging
+                        if (item is LineItem lineItem)
+                        {
+                            // Check for null attributes
+                            if (lineItem.attributes == null)
+                            {
+                                LogToModel($"ERROR: Item {item.id} has no attributes!", 1);
+                                continue;
+                            }
 
+                            ent = new Line(lineItem.attributes.StartPoint, lineItem.attributes.EndPoint);
+                        }
+                        else
+                        {
+                            // IMPORTANT: If this prints, your JSON Converter isn't working!
+                            LogToModel($"SKIP: Item is {item.GetType().Name}, not LineItem", 1);
+                        }
 
+                        if (ent != null)
+                        {
+                            // 6. Layer Existence Check (Crucial for AutoCAD)
+                            // If you try to set a layer that doesn't exist, it crashes or fails.
+                            LayerTable lt = (LayerTable)tr.GetObject(btr.Database.LayerTableId, OpenMode.ForRead);
+                            if (!lt.Has(item.layer))
+                            {
+                                LogToModel($"ERROR: Layer '{item.layer}' missing in DWG!", 1);
+                                // Optional: Create it or force to "0" to see geometry
+                                // ent.Layer = "0"; 
+                            }
+                            else
+                            {
+                                ent.Layer = item.layer;
+                            }
+
+                            // 7. Transform
+                            ent.TransformBy(Matrix3d.Displacement(offset.GetAsVector()));
+
+                            btr.AppendEntity(ent);
+                            tr.AddNewlyCreatedDBObject(ent, true);
+                            drawCount++;
+                        }
+                    }
+                }
+
+                LogToModel($"Successfully Drawn: {drawCount} items", 3);
             }
-
-
-
-            catch (Exception ex)
+            catch (System.Exception ex)
             {
-                ed.WriteMessage($"\nError: {ex.Message}");
+                LogToModel($"CRASH: {ex.Message}", 1);
             }
-
-
         }
 
         private void DrawFromJSON(Document doc, JArray data, Point3d offset)
@@ -1639,7 +2067,7 @@ namespace ProductDesignPlugin
                 BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
                 BlockTableRecord btr = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
 
-                DbPolyline box = new DbPolyline(4);
+                DBPolyline box = new DBPolyline(4);
                 box.AddVertexAt(0, new Point2d(0, 0), 0, 0, 0);
                 box.AddVertexAt(1, new Point2d(gridSize * cellSize, 0), 0, 0, 0);
                 box.AddVertexAt(2, new Point2d(gridSize * cellSize, gridSize * cellSize), 0, 0, 0);
@@ -1727,7 +2155,7 @@ namespace ProductDesignPlugin
                 BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
                 BlockTableRecord btr = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
 
-                DbPolyline box = new DbPolyline(4);
+                DBPolyline box = new DBPolyline(4);
                 box.AddVertexAt(0, new Point2d(0, 0), 0, 0, 0);
                 box.AddVertexAt(1, new Point2d(gridSize * cellSize, 0), 0, 0, 0);
                 box.AddVertexAt(2, new Point2d(gridSize * cellSize, gridSize * cellSize), 0, 0, 0);
