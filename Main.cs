@@ -1419,7 +1419,7 @@ namespace ProductDesignPlugin
         {
             public string id { get; set; }
             public string key { get; set; }
-            public string layer { get; set; }
+            public string ad_layer { get; set; }
             public int product_index { get; set; }
             public List<string> tags { get; set; }
             public string type { get; set; } // "geo_line"
@@ -1504,6 +1504,93 @@ namespace ProductDesignPlugin
                 }
             }
 
+            [CommandMethod("ADCONTINUE")]
+            public async void ContinueAutoDraw()
+            {
+                Document doc = Application.DocumentManager.MdiActiveDocument;
+                Editor ed = doc.Editor;
+                Database db = doc.Database;
+
+                if (!PluginSession.IsLoggedIn)
+                {
+                    ed.WriteMessage("\nPlease login first (ADLOGIN).");
+                    return;
+                }
+
+                if (CurrentProjectId == 0)
+                {
+                    ed.WriteMessage("\nNo project cached. Run ADSTART first.");
+                    return;
+                }
+
+                try
+                {
+                    // Prepare POST request (empty body for now)
+                    string url = $"{PluginSession.BaseUrl}/automation/continue/{CurrentProjectId}";
+                    client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", PluginSession.AuthToken);
+                    var content = new StringContent("", Encoding.UTF8, "application/json");
+                    HttpResponseMessage response = await client.PostAsync(url, content);
+
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        ed.WriteMessage($"\nRequest Failed: {response.StatusCode}");
+                        return;
+                    }
+
+                    string json = await response.Content.ReadAsStringAsync();
+
+                    // Parse the wrapper and extract "data"
+                    var wrapper = JObject.Parse(json);
+                    var dataToken = wrapper["data"];
+                    if (dataToken == null)
+                    {
+                        ed.WriteMessage("\nAPI response missing 'data' property.");
+                        return;
+                    }
+
+                    var updated = dataToken.ToObject<ProjectDetails>();
+                    if (updated == null)
+                    {
+                        ed.WriteMessage("\nFailed to parse updated project data.");
+                        return;
+                    }
+
+                    // Update cached data (except autodraw_config)
+                    if (CurrentProjectData == null)
+                        CurrentProjectData = updated;
+                    else
+                    {
+                        CurrentProjectData.project_attributes = updated.project_attributes;
+                        CurrentProjectData.product_attributes = updated.product_attributes;
+                        CurrentProjectData.autodraw_meta = updated.autodraw_meta;
+                        CurrentProjectData.autodraw_record = updated.autodraw_record;
+                        // Do NOT update autodraw_config
+                    }
+
+                    // Redraw everything except autodraw_config (i.e., do not redraw status board)
+                    using (DocumentLock docLock = doc.LockDocument())
+                    using (Transaction tr = db.TransactionManager.StartTransaction())
+                    {
+                        BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                        BlockTableRecord btr = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
+
+                        // Redraw workflow boxes and debug row only
+                        DrawWorkflowBoxes(tr, btr, CurrentProjectData.autodraw_config, CurrentProjectData.autodraw_meta, CurrentProjectData.autodraw_record);
+                        DrawDebugRow(tr, btr, CurrentProjectData);
+
+                        tr.Commit();
+                    }
+                    ed.Regen();
+                    ed.WriteMessage("\nADCONTINUE: Updated and redrew project data.");
+                }
+                catch (Exception ex)
+                {
+                    ed.WriteMessage($"\nError: {ex.Message}");
+                }
+            }
+
+
+
             // --- 1. STATUS BOARD (Simple Text List) ---
             private void DrawStatusBoard(Transaction tr, BlockTableRecord btr, AutoDrawConfig config, AutoDrawMeta meta, Point3d startPt)
             {
@@ -1541,6 +1628,7 @@ namespace ProductDesignPlugin
                         string prefix = isCurrentSub ? ">> " : "   ";
 
                         MText subText = new MText();
+                        subText.ColorIndex = isCurrentSub ? 1 : 7;
                         subText.Contents = $"{colorCode}{prefix}{step.substeps[j].label}";
                         subText.Location = new Point3d(startPt.X + 1000, currentY, 0);
                         subText.TextHeight = textHeightSub;
@@ -1556,7 +1644,7 @@ namespace ProductDesignPlugin
             // --- 2. WORKFLOW BOXES (30k x 30k) ---
             private void DrawWorkflowBoxes(Transaction tr, BlockTableRecord btr, AutoDrawConfig config, AutoDrawMeta meta, AutoDrawRecord record)
             {
-                double boxSize = 30000;
+                double boxSize = 20000;
                 double gap = 0;
                 double currentY = 0;
 
@@ -1583,7 +1671,7 @@ namespace ProductDesignPlugin
                     // 2. Draw Title inside box
                     MText title = new MText();
                     title.Contents = $"{{\\H500;Step {i}: {step.label}}}";
-                    title.Location = new Point3d(1000, currentY - 1000, 0);
+                    title.Location = new Point3d(500, currentY - 500, 0);
                     title.TextHeight = 500;
                     title.ColorIndex = isActiveStep ? 1 : 7;
                     btr.AppendEntity(title);
@@ -1602,60 +1690,109 @@ namespace ProductDesignPlugin
                 }
             }
 
-            // --- 3. DEBUG ROW (Horizontal to the right) ---
-            private void DrawDebugRow(Transaction tr, BlockTableRecord btr, ProjectDetails data)
+            public static class AutoDrawVisualizer
             {
-                double currentX = -100000;
-                double yPos = 0;
-                double gap = 0;
+                // CONSTANTS
+                private const string UI_LAYER = "AD_UI_OVERLAY";
+                private const double TEXT_PADDING = 200.0;
+                private const double BOX_PADDING = 400.0;
 
-                string pAttr = JsonConvert.SerializeObject(data.project_attributes, Formatting.Indented);
-                string prodAttr = JsonConvert.SerializeObject(data.product_attributes, Formatting.Indented);
-                string config = JsonConvert.SerializeObject(data.autodraw_config, Formatting.Indented);
-                string meta = JsonConvert.SerializeObject(data.autodraw_meta, Formatting.Indented);
-                string record = JsonConvert.SerializeObject(data.autodraw_record, Formatting.Indented);
+                /// <summary>
+                /// Clears all existing debug UI elements and ensures the layer exists.
+                /// Call this at the start of any draw command.
+                /// </summary>
+                public static void ClearAndPrepareLayer(Transaction tr, Database db)
+                {
+                    LayerTable lt = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
 
-                // Draw side-by-side
-                currentX += DrawDebugBox(tr, btr, "project_attributes", pAttr, new Point3d(currentX, yPos, 0), 1) + gap;
-                currentX += DrawDebugBox(tr, btr, "product_attributes", prodAttr, new Point3d(currentX, yPos, 0), 2) + gap;
-                currentX += DrawDebugBox(tr, btr, "autodraw_config", config, new Point3d(currentX, yPos, 0), 3) + gap;
-                currentX += DrawDebugBox(tr, btr, "autodraw_meta", meta, new Point3d(currentX, yPos, 0), 4) + gap;
-                currentX += DrawDebugBox(tr, btr, "autodraw_record", record, new Point3d(currentX, yPos, 0), 6) + gap;
-            }
+                    // 1. Create/Check Layer
+                    if (!lt.Has(UI_LAYER))
+                    {
+                        lt.UpgradeOpen();
+                        using (LayerTableRecord ltr = new LayerTableRecord())
+                        {
+                            ltr.Name = UI_LAYER;
+                            ltr.IsPlottable = false; // Never print debug info
+                            lt.Add(ltr);
+                            tr.AddNewlyCreatedDBObject(ltr, true);
+                        }
+                    }
 
-            // Helper: Returns WIDTH of box
-            private double DrawDebugBox(Transaction tr, BlockTableRecord btr, string title, string content, Point3d position, int colorIndex)
-            {
-                MText mtext = new MText();
-                mtext.Contents = $"{{\\H400;\\C7;{title}}}\n\\P{content}";
-                mtext.Location = new Point3d(position.X + 200, position.Y - 200, 0); // Padding inside
-                mtext.TextHeight = 200.0;
-                mtext.Width = 0.0; // Infinite width (no wrap)
+                    // 2. Delete existing entities on this layer
+                    // (Uses a fast TypedValue filter)
+                    var filter = new SelectionFilter(new[] { new TypedValue((int)DxfCode.LayerName, UI_LAYER) });
+                    var result = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument.Editor.SelectAll(filter);
 
-                btr.AppendEntity(mtext);
-                tr.AddNewlyCreatedDBObject(mtext, true);
+                    if (result.Status == Autodesk.AutoCAD.EditorInput.PromptStatus.OK)
+                    {
+                        foreach (ObjectId id in result.Value.GetObjectIds())
+                        {
+                            Entity ent = (Entity)tr.GetObject(id, OpenMode.ForWrite);
+                            ent.Erase();
+                        }
+                    }
+                }
 
-                Extents3d ext = mtext.GeometricExtents;
-                double w = ext.MaxPoint.X - ext.MinPoint.X + 400;
-                double h = ext.MaxPoint.Y - ext.MinPoint.Y + 400;
+                /// <summary>
+                /// Draws the horizontal row of raw JSON data starting at x: -100,000
+                /// </summary>
+                public static void DrawDebugRow(Transaction tr, BlockTableRecord btr, ProjectDetails data)
+                {
+                    double currentX = -100000;
+                    double yPos = 0;
+                    double gap = 2000; // Gap between boxes
 
-                DBPolyline box = new DBPolyline();
-                // Top-Left
-                box.AddVertexAt(0, new Point2d(position.X, position.Y), 0, 0, 0);
-                // Top-Right
-                box.AddVertexAt(1, new Point2d(position.X + w, position.Y), 0, 0, 0);
-                // Bottom-Right
-                box.AddVertexAt(2, new Point2d(position.X + w, position.Y - h), 0, 0, 0);
-                // Bottom-Left
-                box.AddVertexAt(3, new Point2d(position.X, position.Y - h), 0, 0, 0);
+                    // Serialize
+                    string pAttr = JsonConvert.SerializeObject(data.project_attributes, Formatting.Indented);
+                    string prodAttr = JsonConvert.SerializeObject(data.product_attributes, Formatting.Indented);
+                    string config = JsonConvert.SerializeObject(data.autodraw_config, Formatting.Indented);
+                    string meta = JsonConvert.SerializeObject(data.autodraw_meta, Formatting.Indented);
+                    string record = JsonConvert.SerializeObject(data.autodraw_record, Formatting.Indented);
 
-                box.Closed = true;
-                box.ColorIndex = colorIndex;
+                    // Draw sequence
+                    currentX += DrawDebugBox(tr, btr, "PROJECT ATTRIBUTES", pAttr, new Point3d(currentX, yPos, 0), 1) + gap;
+                    currentX += DrawDebugBox(tr, btr, "PRODUCT ATTRIBUTES", prodAttr, new Point3d(currentX, yPos, 0), 2) + gap;
+                    currentX += DrawDebugBox(tr, btr, "AUTODRAW CONFIG", config, new Point3d(currentX, yPos, 0), 3) + gap;
+                    currentX += DrawDebugBox(tr, btr, "AUTODRAW META", meta, new Point3d(currentX, yPos, 0), 4) + gap;
+                    currentX += DrawDebugBox(tr, btr, "AUTODRAW RECORD", record, new Point3d(currentX, yPos, 0), 6) + gap;
+                }
 
-                btr.AppendEntity(box);
-                tr.AddNewlyCreatedDBObject(box, true);
+                /// <summary>
+                /// Internal Helper to draw the box and text
+                /// </summary>
+                private static double DrawDebugBox(Transaction tr, BlockTableRecord btr, string title, string content, Point3d position, int colorIndex)
+                {
+                    // 1. Create Text
+                    MText mtext = new MText();
+                    mtext.Contents = $"{{\\H400;\\C7;{title}}}\n\\P{content}";
+                    mtext.Location = new Point3d(position.X + TEXT_PADDING, position.Y - TEXT_PADDING, 0);
+                    mtext.TextHeight = 200.0;
+                    mtext.Width = 0.0; // No wrap
+                    mtext.Layer = UI_LAYER; // Important: Assign to UI Layer
 
-                return w;
+                    btr.AppendEntity(mtext);
+                    tr.AddNewlyCreatedDBObject(mtext, true);
+
+                    // 2. Calculate Box Size
+                    Extents3d ext = mtext.GeometricExtents;
+                    double w = ext.MaxPoint.X - ext.MinPoint.X + (TEXT_PADDING * 2);
+                    double h = ext.MaxPoint.Y - ext.MinPoint.Y + (TEXT_PADDING * 2);
+
+                    // 3. Create Rectangle (Polyline)
+                    Polyline box = new Polyline();
+                    box.AddVertexAt(0, new Point2d(position.X, position.Y), 0, 0, 0);
+                    box.AddVertexAt(1, new Point2d(position.X + w, position.Y), 0, 0, 0);
+                    box.AddVertexAt(2, new Point2d(position.X + w, position.Y - h), 0, 0, 0);
+                    box.AddVertexAt(3, new Point2d(position.X, position.Y - h), 0, 0, 0);
+                    box.Closed = true;
+                    box.ColorIndex = colorIndex;
+                    box.Layer = UI_LAYER; // Important: Assign to UI Layer
+
+                    btr.AppendEntity(box);
+                    tr.AddNewlyCreatedDBObject(box, true);
+
+                    return w;
+                }
             }
         }
 
@@ -1669,9 +1806,37 @@ namespace ProductDesignPlugin
         /// <param name="offset">The Top-Left corner of the Step Box (e.g., 0, -35000)</param>
         public static void DrawStepGeometry(Transaction tr, BlockTableRecord btr, ConfigStep step, List<GeometryItem> allGeometry, Point3d offset)
         {
-            // --- DEBUG SETUP: Start writing text at the top-left of the box ---
-            double debugY = offset.Y - 2000; // Start slightly down from top
-            double debugX = offset.X + 1000; // Padding from left
+            // --- LOCAL OFFSETS ---
+            double debugOffsetX = 15000;   // Debug info X offset from box origin
+            double debugOffsetY = -2000;   // Debug info Y offset from box origin
+            double drawOffsetX = 2000;     // Geometry X offset from box origin
+            double drawOffsetY = -2000;    // Geometry Y offset from box origin
+
+            // --- DEBUG SETUP: Start writing text at the top-left of the box, with local offset ---
+            double debugY = offset.Y + debugOffsetY;
+            double debugX = offset.X + debugOffsetX;
+
+            // --- Draw crosses to indicate the true start positions (before offsets) ---
+            void DrawCross(Point3d center, double size, int color)
+            {
+                double half = size / 2;
+                Line l1 = new Line(
+                    new Point3d(offset.X + center.X - half, offset.Y + center.Y, 0),
+                    new Point3d(offset.X + center.X + half, offset.Y + center.Y, 0));
+                Line l2 = new Line(
+                    new Point3d(offset.X + center.X, offset.Y + center.Y - half, 0),
+                    new Point3d(offset.X + center.X, offset.Y + center.Y + half, 0));
+                l1.ColorIndex = color;
+                l2.ColorIndex = color;
+                btr.AppendEntity(l1); tr.AddNewlyCreatedDBObject(l1, true);
+                btr.AppendEntity(l2); tr.AddNewlyCreatedDBObject(l2, true);
+            }
+
+            // Draw cross at the original geometry start (offset)
+            DrawCross(new Point3d (drawOffsetX, drawOffsetY, 0), 1200, 2); // Green cross for geometry start
+
+            // Draw cross at the original debug info start
+            DrawCross(new Point3d(debugOffsetX, debugOffsetY, 0), 1200, 1); // Red cross for debug info start
 
             // Local Helper to draw debug text quickly
             void LogToModel(string msg, int color)
@@ -1679,11 +1844,11 @@ namespace ProductDesignPlugin
                 MText txt = new MText();
                 txt.Contents = msg;
                 txt.Location = new Point3d(debugX, debugY, 0);
-                txt.TextHeight = 400; // Readable size
+                txt.TextHeight = 200; // Readable size
                 txt.ColorIndex = color; // 1=Red, 3=Green, 7=White
                 btr.AppendEntity(txt);
                 tr.AddNewlyCreatedDBObject(txt, true);
-                debugY -= 600; // Move down for next line
+                debugY -= 300; // Move down for next line
             }
 
             try
@@ -1716,10 +1881,7 @@ namespace ProductDesignPlugin
 
                     foreach (var rule in step.show)
                     {
-                        // DEBUG: Log what we are comparing
-                        // LogToModel($"Checking: {item.layer} vs {rule.value}", 252); 
-
-                        if (rule.query == "ad_layer" && item.layer == rule.value)
+                        if (rule.query == "ad_layer" && item.ad_layer == rule.value)
                         {
                             shouldDraw = true;
                             matchedRule = rule.value;
@@ -1729,46 +1891,40 @@ namespace ProductDesignPlugin
 
                     if (shouldDraw)
                     {
-                        // DEBUG: Found a match
-                        // LogToModel($"Match! Item Type: {item.GetType().Name}", 3);
-
                         Entity ent = null;
 
-                        // 5. Type Check Debugging
                         if (item is LineItem lineItem)
                         {
-                            // Check for null attributes
                             if (lineItem.attributes == null)
                             {
                                 LogToModel($"ERROR: Item {item.id} has no attributes!", 1);
                                 continue;
                             }
 
-                            ent = new Line(lineItem.attributes.StartPoint, lineItem.attributes.EndPoint);
+                            // Apply local geometry offset
+                            Point3d localStart = lineItem.attributes.StartPoint.Add(new Vector3d(drawOffsetX, drawOffsetY, 0));
+                            Point3d localEnd = lineItem.attributes.EndPoint.Add(new Vector3d(drawOffsetX, drawOffsetY, 0));
+
+                            ent = new Line(localStart, localEnd);
                         }
                         else
                         {
-                            // IMPORTANT: If this prints, your JSON Converter isn't working!
                             LogToModel($"SKIP: Item is {item.GetType().Name}, not LineItem", 1);
                         }
 
                         if (ent != null)
                         {
-                            // 6. Layer Existence Check (Crucial for AutoCAD)
-                            // If you try to set a layer that doesn't exist, it crashes or fails.
                             LayerTable lt = (LayerTable)tr.GetObject(btr.Database.LayerTableId, OpenMode.ForRead);
-                            if (!lt.Has(item.layer))
+                            if (!lt.Has(item.ad_layer))
                             {
-                                LogToModel($"ERROR: Layer '{item.layer}' missing in DWG!", 1);
-                                // Optional: Create it or force to "0" to see geometry
-                                // ent.Layer = "0"; 
+                                LogToModel($"ERROR: Layer '{item.ad_layer}' missing in DWG!", 1);
                             }
                             else
                             {
-                                ent.Layer = item.layer;
+                                ent.Layer = item.ad_layer;
                             }
 
-                            // 7. Transform
+                            // Apply the main offset as before
                             ent.TransformBy(Matrix3d.Displacement(offset.GetAsVector()));
 
                             btr.AppendEntity(ent);
@@ -1785,6 +1941,8 @@ namespace ProductDesignPlugin
                 LogToModel($"CRASH: {ex.Message}", 1);
             }
         }
+
+
 
         private void DrawFromJSON(Document doc, JArray data, Point3d offset)
         {
