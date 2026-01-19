@@ -1779,7 +1779,7 @@ namespace ProductDesignPlugin
                     double h = ext.MaxPoint.Y - ext.MinPoint.Y + (TEXT_PADDING * 2);
 
                     // 3. Create Rectangle (Polyline)
-                    Polyline box = new Polyline();
+                    DPolyline box = new Polyline();
                     box.AddVertexAt(0, new Point2d(position.X, position.Y), 0, 0, 0);
                     box.AddVertexAt(1, new Point2d(position.X + w, position.Y), 0, 0, 0);
                     box.AddVertexAt(2, new Point2d(position.X + w, position.Y - h), 0, 0, 0);
