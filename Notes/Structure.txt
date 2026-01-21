@@ -1,0 +1,12 @@
+ AutoDrawPlugin
+ ???  Models           <-- Pure Data (No logic)
+ ?    ??? ProjectData.cs     (ProjectDetails, Meta, Config classes)
+ ?    ??? GeometryData.cs    (GeometryItem, LineItem, JsonConverter)
+ ?
+ ???  Logic            <-- The "Workers" (Doing the heavy lifting)
+ ?    ??? ApiService.cs      (Login, Fetching JSON)
+ ?    ??? UiRenderer.cs      (The "HUD": Status Board, Debug Stack)
+ ?    ??? StepRenderer.cs    (The "Artist": Workflow Boxes, Geometry, Offsets)
+ ?
+ ???  Commands         <-- The Entry Points
+      ??? MainCommands.cs    (ADSTART, ADCONTINUE)
