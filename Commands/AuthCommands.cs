@@ -7,10 +7,12 @@ using System.Text;
 using System.Threading.Tasks;
 using Autodesk.AutoCAD.EditorInput;
 
-internal static class AuthCommandsNew
+namespace autodraw_plugin.Commands;
+
+public class AuthCommands
 {
-    [CommandMethod("ADLOGIN2")]
-    public static async void Login()
+    [CommandMethod("ADLOGIN")]
+    public static async void ADLogin()
     {
         var ed = Application.DocumentManager.MdiActiveDocument?.Editor;
         if (ed is null) return;
@@ -28,17 +30,36 @@ internal static class AuthCommandsNew
             if (passRes.Status != PromptStatus.OK) return;
 
             ed.WriteMessage("\nConnecting...");
-
-
         
             // hardcoded for now (POC) or read from env vars
-            await ApiService.PostAsync("admin", "password");
+            await autodraw_plugin.autodraw.Auth.Login(userRes.StringResult, passRes.StringResult);
 
-            ed.WriteMessage("\n[COPE] Login OK\n");
+            ed.WriteMessage("\nLogin OK\n");
         }
         catch (System.Exception ex)
         {
-            ed.WriteMessage($"\n[COPE] Login failed: {ex.Message}\n");
+            ed.WriteMessage($"\nLogin failed: {ex.Message}\n");
+        }
+    }
+    [CommandMethod("ADLOGOUT")]
+    public static async void ADLogout()
+    {
+        await autodraw_plugin.autodraw.Auth.Logout();
+    }
+
+    [CommandMethod("ADSTATUS")]
+    public static void ADStatus()
+    {
+        var ed = Application.DocumentManager.MdiActiveDocument?.Editor;
+        if (ed is null) return;
+        var auth = autodraw_plugin.autodraw.Auth;
+        if (auth.IsLoggedIn)
+        {
+            ed.WriteMessage($"\nLogged in as: {auth.CurrentUser} (Role: {auth.Role}, Verified: {auth.IsVerified})\n");
+        }
+        else
+        {
+            ed.WriteMessage("\nNot logged in.\n");
         }
     }
 }

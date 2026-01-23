@@ -1,0 +1,9 @@
+ADLOGIN		<username> <password>			Logs in to Active Directory with the provided username and password.
+ADLOGOUT									Logs out from the current Active Directory session.
+ADSTATUS									Displays the current status of the Authenticated user.
+
+ADLIST										Lists projects that are currently in_design and marked for the current user.
+ADLISTALL									Lists all projects including completed and archived ones.
+
+ADSTART		<projectId>						Starts a new project in Autodraw
+ADCONTINUE									Advances the step or substep in the current Autodraw project

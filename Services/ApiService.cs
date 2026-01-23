@@ -2,34 +2,35 @@
 using System.Text;
 using System.Threading.Tasks;
 
-namespace ApiService { 
-    internal static class ApiService
+namespace autodraw_plugin.Services
+{
+public static class ApiService
+{
+    public static string BaseUrl { get; } = "http://127.0.0.1:5001/copelands/api";
+
+    private static readonly HttpClient client = new HttpClient();
+
+    public static async Task<HttpResponseMessage> Get(string endpoint)
     {
-        public static string BaseUrl { get; } = "http://127.0.0.1:5001/copelands/api";
+        string url = $"{BaseUrl}{endpoint}";
 
-        private static readonly HttpClient client = new HttpClient();
+        HttpResponseMessage response = await client.GetAsync(url);
 
-        public static async Task<string> GetAsync(string endpoint)
-        {
-            string url = $"{BaseUrl}{endpoint}";
+        // Throws if not 200-299 (nice for POC)
+        response.EnsureSuccessStatusCode();
 
-            HttpResponseMessage response = await client.GetAsync(url);
-
-            // Throws if not 200-299 (nice for POC)
-            response.EnsureSuccessStatusCode();
-
-            return await response.Content.ReadAsStringAsync();
-        }
-
-        public static async Task<string> PostAsync(string endpoint, StringContent content)
-        {
-            string url = $"{BaseUrl}{endpoint}";
-
-            HttpResponseMessage response = await client.PostAsync(url, content);
-
-            response.EnsureSuccessStatusCode();
-
-            return await response.Content.ReadAsStringAsync();
-        }
+        return response;
     }
+
+    public static async Task<HttpResponseMessage> Post(string endpoint, StringContent content)
+    {
+        string url = $"{BaseUrl}{endpoint}";
+
+        HttpResponseMessage response = await client.PostAsync(url, content);
+
+        response.EnsureSuccessStatusCode();
+
+        return response;
+    }
+}
 }
