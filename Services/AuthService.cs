@@ -68,10 +68,15 @@ public class AuthService : IDisposable
                 BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
                 BlockTableRecord btr = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
 
+                // On INFO so it is never submitted, and far enough out that it
+                // stays clear of the drawing whatever size the job is.
+                AutoDrawVisualizer.EnsureInfoLayer(tr, db);
+
                 MText mtext = new MText();
                 mtext.TextHeight = 1000;
                 mtext.Contents = $"Hello {data.username}, {data.role}";
-                mtext.Location = new Point3d(0, 2000, 0);
+                mtext.Location = new Point3d(-60000, 5000, 0);
+                mtext.Layer = AutoDrawVisualizer.InfoLayer;
 
                 btr.AppendEntity(mtext);
                 tr.AddNewlyCreatedDBObject(mtext, true);

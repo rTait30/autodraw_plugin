@@ -47,8 +47,9 @@ public class AuthCommands
         await autodraw_plugin.autodraw.Auth.Logout();
     }
 
-    [CommandMethod("ADSTATUS")]
-    public static void ADStatus()
+    /// <summary>Auth only. ADSTATUS reports the job as well as the login.</summary>
+    [CommandMethod("ADWHOAMI")]
+    public static void ADWhoAmI()
     {
         var ed = Application.DocumentManager.MdiActiveDocument?.Editor;
         if (ed is null) return;

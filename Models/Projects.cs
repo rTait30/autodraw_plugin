@@ -7,51 +7,46 @@ using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
 
 using autodraw_plugin.Models.AutoDraw;
+using Newtonsoft.Json;
 
 namespace autodraw_plugin.Models.Projects;
 
-// ROOT PROJECT
+// Root DTO for /automation/start/{projectId}
 public class ProjectDetailsDTO
 {
-    public JToken? project_attributes { get; set; }
+    [JsonProperty("project_id")]
+    public int ProjectId { get; set; }
 
-    // REPLACES: product_attributes
-    public List<ProjectProductDTO> products { get; set; } = new();
+    [JsonProperty("project_name")]
+    public string ProjectName { get; set; }
 
-    public AutoDrawConfigDTO autodraw_config { get; set; } = null!;
-    public AutoDrawMetaDTO autodraw_meta { get; set; } = null!;
-    public AutoDrawRecordDTO autodraw_record { get; set; } = null!;
+    [JsonProperty("project_attributes")]
+    public JToken? ProjectAttributes { get; set; }
+
+    [JsonProperty("item_attributes")]
+    public List<JToken> ItemAttributes { get; set; } = new();
+
+    [JsonProperty("autodraw_config")]
+    public AutoDrawConfigDTO AutodrawConfig { get; set; } = new();
+
+    [JsonProperty("autodraw_meta")]
+    public AutoDrawMetaDTO AutodrawMeta { get; set; } = new();
+
+    [JsonProperty("autodraw_record")]
+    public AutoDrawRecordDTO AutodrawRecord { get; set; } = new();
+
+    /// <summary>What this drawing should send back on ADCONTINUE.</summary>
+    [JsonProperty("submission")]
+    public SubmissionContractDTO Submission { get; set; } = new();
+
+    [JsonProperty("current_artifact")]
+    public ArtifactSummaryDTO? CurrentArtifact { get; set; }
+
+    /// <summary>Base64 DXF of the drawing as the server currently holds it.</summary>
+    [JsonProperty("dxf")]
+    public string? Dxf { get; set; }
+
+    [JsonProperty("dxf_scope")]
+    public string? DxfScope { get; set; }
 }
 
-public class ProjectProductDTO
-{
-    public int item_index { get; set; }          // stable ordering / index
-    public string label { get; set; } = "";      // e.g. "Sail A", "Cover 1"
-    public JToken? attributes { get; set; }      // per-product type-specific JSON blob
-}
-
-public class ProductDTO
-
-{
-    public int id { get; set; }
-    public string name { get; set; }
-
-    public string info()
-    {
-        return "Product ID: " + id + " (" + name + ")";
-    }
-}
-
-public class ProjectGeneralInfoDTO
-{
-    public string client_id { get; set; }
-    public string client_name { get; set; }
-
-    public string name { get; set; }
-
-    public string info()
-    {
-        return "Project name: " + name + " | Client: " + client_id + " (" + client_name + ")";
-    }
-
-}
