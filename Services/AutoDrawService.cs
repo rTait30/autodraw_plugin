@@ -17,6 +17,18 @@ namespace autodraw_plugin.Services
         public ProjectDetailsDTO? CurrentProjectData { get; private set; }
 
         /// <summary>
+        /// The line of work loaded in this drawing. Two branches look identical
+        /// on screen, so the board says which one is in front of you.
+        /// </summary>
+        public string? CurrentBranch { get; private set; }
+
+        /// <summary>Remember a branch the server just reported, if it did.</summary>
+        public void NoteBranch(string? name)
+        {
+            if (!string.IsNullOrWhiteSpace(name)) CurrentBranch = name;
+        }
+
+        /// <summary>
         /// Fetch a project's automation state and its drawing.
         ///
         /// Asks for the full scope by default, so resuming a job that is past
@@ -34,6 +46,7 @@ namespace autodraw_plugin.Services
 
             // The new structure is a direct object, no "data" wrapper
             CurrentProjectData = JsonConvert.DeserializeObject<ProjectDetailsDTO>(json);
+            NoteBranch(CurrentProjectData?.CurrentArtifact?.Branch);
         }
 
         /// <summary>
@@ -42,10 +55,11 @@ namespace autodraw_plugin.Services
         /// </summary>
         public async Task<ContinueResponseDTO> Continue(
             int projectId, string dxfPath, string? selectedOption = null,
-            IDictionary<string, string>? answers = null)
+            IDictionary<string, string>? answers = null, string? branch = null)
         {
             var fields = new Dictionary<string, string>();
             if (!string.IsNullOrEmpty(selectedOption)) fields["selected_option"] = selectedOption;
+            if (!string.IsNullOrEmpty(branch)) fields["branch"] = branch;
             if (answers != null && answers.Count > 0)
             {
                 fields["inputs"] = JsonConvert.SerializeObject(answers);
@@ -65,12 +79,69 @@ namespace autodraw_plugin.Services
         /// Undo the last completed substep. The server hands back the whole
         /// drawing as it stood before that step, for a full redraw.
         /// </summary>
-        public async Task<ContinueResponseDTO> Back(int projectId)
+        public async Task<ContinueResponseDTO> Back(int projectId, string? toSubstep = null)
         {
+            var fields = new Dictionary<string, string>();
+            if (!string.IsNullOrWhiteSpace(toSubstep)) fields["to_substep"] = toSubstep;
+
             HttpResponseMessage response = await ApiService.PostForm(
-                $"/automation/back/{projectId}", new Dictionary<string, string>());
+                $"/automation/back/{projectId}", fields);
 
             return await Interpret(response, "ADBACK");
+        }
+
+        /// <summary>
+        /// Attach a note to the state now loaded. Empty text clears it.
+        /// </summary>
+        public async Task<ContinueResponseDTO> Note(int projectId, string text)
+        {
+            HttpResponseMessage response = await ApiService.PostForm(
+                $"/automation/note/{projectId}",
+                new Dictionary<string, string> { ["note"] = text ?? "" });
+
+            return await Interpret(response, "ADNOTE");
+        }
+
+        /// <summary>List the lines of work this project holds.</summary>
+        public async Task<BranchListDTO?> Branches(int projectId)
+        {
+            HttpResponseMessage response = await ApiService.Get($"/automation/branches/{projectId}");
+            string body = await response.Content.ReadAsStringAsync();
+            try
+            {
+                return JsonConvert.DeserializeObject<BranchListDTO>(body);
+            }
+            catch (JsonException)
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Load another branch's newest state. The drawing is replaced wholesale,
+        /// the same as reverting - a different line may have reached a different
+        /// point entirely.
+        /// </summary>
+        public async Task<ContinueResponseDTO> SwitchBranch(int projectId, string name)
+        {
+            HttpResponseMessage response = await ApiService.PostForm(
+                $"/automation/branch/{projectId}",
+                new Dictionary<string, string> { ["branch"] = name });
+
+            return await Interpret(response, "ADBRANCH");
+        }
+
+        /// <summary>
+        /// Redo the substep that was undone, without running it again. The
+        /// server restores a drawing it already made and hands back the whole
+        /// of it, exactly as reverting does.
+        /// </summary>
+        public async Task<ContinueResponseDTO> Forward(int projectId)
+        {
+            HttpResponseMessage response = await ApiService.PostForm(
+                $"/automation/forward/{projectId}", new Dictionary<string, string>());
+
+            return await Interpret(response, "ADFORWARD");
         }
 
         /// <summary>

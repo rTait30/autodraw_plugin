@@ -24,26 +24,38 @@ public static class AutoDrawVisualizer
     public const string InfoLayer = "INFO";
 
     /// <summary>
+    /// Where the lineage's notes are laid out. Like INFO it is the plugin's own
+    /// annotation, excluded from submission so the server never adopts it.
+    /// </summary>
+    public const string NotesLayer = "NOTES";
+
+    /// <summary>
     /// The board sits at a fixed spot rather than tracking the drawing's edge,
     /// so it stays where the designer last looked for it instead of moving
     /// every time the geometry grows.
     /// </summary>
     private static readonly Point3d BoardPosition = new Point3d(-30000, 0, 0);
 
-    /// <summary>Clearance above the sail for the per-sail summary.</summary>
-    private const double SummaryMargin = 3000.0;
-    private const double SummaryHeight = 400.0;
+    /// <summary>
+    /// Notes sit opposite the board, on the far side of the model. Fixed for
+    /// the same reason the board is: it stays where it was last read.
+    /// </summary>
+    private static readonly Point3d NotesPosition = new Point3d(30000, 0, 0);
+
 
     /// <summary>Create the INFO layer if it is missing. Non-plotting: it is not part of the job.</summary>
-    public static void EnsureInfoLayer(Transaction tr, Database db)
+    public static void EnsureInfoLayer(Transaction tr, Database db) => EnsureLayer(tr, db, InfoLayer);
+
+    /// <summary>A non-plotting layer for the plugin's own annotation.</summary>
+    public static void EnsureLayer(Transaction tr, Database db, string name)
     {
         LayerTable lt = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
-        if (lt.Has(InfoLayer)) return;
+        if (lt.Has(name)) return;
 
         lt.UpgradeOpen();
         LayerTableRecord layer = new LayerTableRecord
         {
-            Name = InfoLayer,
+            Name = name,
             IsPlottable = false,
         };
         lt.Add(layer);
@@ -51,7 +63,10 @@ public static class AutoDrawVisualizer
     }
 
     /// <summary>Erase the previous board so it can be redrawn from current state.</summary>
-    public static void ClearInfoLayer(Transaction tr, Database db)
+    public static void ClearInfoLayer(Transaction tr, Database db) => ClearLayer(tr, db, InfoLayer);
+
+    /// <summary>Erase a layer's contents so it can be redrawn from current state.</summary>
+    public static void ClearLayer(Transaction tr, Database db, string name)
     {
         BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
         BlockTableRecord ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
@@ -60,7 +75,7 @@ public static class AutoDrawVisualizer
         foreach (ObjectId id in ms)
         {
             Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
-            if (ent != null && ent.Layer == InfoLayer) doomed.Add(id);
+            if (ent != null && ent.Layer == name) doomed.Add(id);
         }
         foreach (ObjectId id in doomed)
         {
@@ -74,77 +89,90 @@ public static class AutoDrawVisualizer
         return BoardPosition;
     }
 
-    /// <summary>The extents of the real geometry, ignoring the INFO board.</summary>
-    private static bool ContentExtents(Transaction tr, Database db, out double minX, out double maxY)
+    /// <summary>Where the notes panel sits. Fixed, opposite the board.</summary>
+    public static Point3d NotesOrigin()
     {
-        BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
-        BlockTableRecord ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
-
-        bool any = false;
-        minX = 0; maxY = 0;
-
-        foreach (ObjectId id in ms)
-        {
-            Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
-            if (ent == null || ent.Layer == InfoLayer) continue;
-
-            Extents3d ext;
-            try { ext = ent.GeometricExtents; }
-            catch (Autodesk.AutoCAD.Runtime.Exception) { continue; }
-
-            if (!any) { minX = ext.MinPoint.X; maxY = ext.MaxPoint.Y; any = true; }
-            else
-            {
-                minX = Math.Min(minX, ext.MinPoint.X);
-                maxY = Math.Max(maxY, ext.MaxPoint.Y);
-            }
-        }
-
-        return any;
+        return NotesPosition;
     }
+
 
     /// <summary>
-    /// Write each cable section's length beside the sail.
+    /// Lay out the lineage's notes beside the model, grouped by step.
     ///
-    /// Drawn by the plugin from values the step recorded, not sent as geometry:
-    /// anything the server drew on INFO would be excluded from the next
-    /// submission, read back as deleted, and disappear. Derived numbers belong
-    /// on the record, and the drawing renders them.
+    /// The server sends them already ordered and already filtered to the line
+    /// now loaded, so switching branches changes what appears here. Nothing is
+    /// stored in the drawing - it is redrawn from the record each time.
     /// </summary>
-    public static void DrawCableSummary(Transaction tr, BlockTableRecord btr, Database db, AutoDrawRecordDTO record)
+    public static void DrawNotes(Transaction tr, BlockTableRecord btr, List<NoteDTO> notes, Point3d startPt)
     {
-        if (record?.Steps == null) return;
+        double currentY = startPt.Y;
+        const double NoteWidth = 12000.0;
 
-        var lines = new List<string>();
-        foreach (var step in record.Steps.Values)
+        MText header = new MText();
+        header.Contents = "{\\H1200;\\C3;Notes}";
+        header.Location = new Point3d(startPt.X, currentY + 2000, 0);
+        header.TextHeight = 1200;
+        header.Layer = NotesLayer;
+        btr.AppendEntity(header);
+        tr.AddNewlyCreatedDBObject(header, true);
+
+        if (notes == null || notes.Count == 0)
         {
-            if (step?.Substeps == null) continue;
-            foreach (var substep in step.Substeps.Values)
-            {
-                JToken sections = substep?.Metadata?["derived"]?["cableSections"];
-                if (sections == null) continue;
-                foreach (JToken section in sections)
-                {
-                    double length = section["lengthMm"]?.Value<double>() ?? 0.0;
-                    lines.Add($"Cable {section["section"]}   {length:N0}mm");
-                }
-            }
+            MText empty = new MText();
+            empty.Contents = "{\\C252;Nothing noted on this branch.}";
+            empty.Location = new Point3d(startPt.X, currentY, 0);
+            empty.TextHeight = 500;
+            empty.Layer = NotesLayer;
+            btr.AppendEntity(empty);
+            tr.AddNewlyCreatedDBObject(empty, true);
+            return;
         }
-        if (lines.Count == 0) return;
 
-        double minX, maxY;
-        if (!ContentExtents(tr, db, out minX, out maxY)) return;
+        string lastStep = null;
+        foreach (NoteDTO note in notes)
+        {
+            if (note.StepLabel != lastStep)
+            {
+                MText stepText = new MText();
+                stepText.Contents = "{\\C7;" + note.StepLabel + "}";
+                stepText.Location = new Point3d(startPt.X, currentY, 0);
+                stepText.TextHeight = 800;
+                stepText.Layer = NotesLayer;
+                btr.AppendEntity(stepText);
+                tr.AddNewlyCreatedDBObject(stepText, true);
+                currentY -= 1200;
+                lastStep = note.StepLabel;
+            }
 
-        MText text = new MText();
-        text.Contents = "{\\C3;" + string.Join("\\P", lines) + "}";
-        text.Location = new Point3d(minX, maxY + SummaryMargin, 0);
-        text.TextHeight = SummaryHeight;
-        text.Layer = InfoLayer;
-        btr.AppendEntity(text);
-        tr.AddNewlyCreatedDBObject(text, true);
+            // The step's own account first, then anything a person added.
+            // A note filed before its step has run is marked, so it is clear
+            // nothing has been drawn for it yet.
+            string text = "{\\C4;" + note.SubstepLabel + (note.Pending ? "  (not run yet)" : "") + "}";
+            if (!string.IsNullOrWhiteSpace(note.Note))
+            {
+                // A step writes plain line breaks; MText wants paragraph marks.
+                text += "\\P{\\C253;" + note.Note.Replace("\n", "\\P") + "}";
+            }
+            if (!string.IsNullOrWhiteSpace(note.UserNote))
+            {
+                text += "\\P{\\C2;note: " + note.UserNote + "}";
+            }
+
+            MText body = new MText();
+            body.Contents = text;
+            body.Location = new Point3d(startPt.X + 800, currentY, 0);
+            body.TextHeight = 500;
+            body.Width = NoteWidth;
+            body.Layer = NotesLayer;
+            btr.AppendEntity(body);
+            tr.AddNewlyCreatedDBObject(body, true);
+
+            // Two lines plus however many the note wrapped onto.
+            currentY -= 900 + body.ActualHeight;
+        }
     }
 
-    public static void DrawStatusBoard(Transaction tr, BlockTableRecord btr, AutoDrawConfigDTO config, AutoDrawMetaDTO meta, Point3d startPt)
+    public static void DrawStatusBoard(Transaction tr, BlockTableRecord btr, AutoDrawConfigDTO config, AutoDrawMetaDTO meta, Point3d startPt, string branch = null)
     {
         double currentY = startPt.Y;
         double stepGap = 1500;
@@ -152,7 +180,11 @@ public static class AutoDrawVisualizer
         double textHeightSub = 500;
 
         MText header = new MText();
-        header.Contents = "{\\H1200;\\C3;Steps}";
+        // Two branches draw the same geometry, so the heading has to say
+        // which of them is in front of you.
+        header.Contents = string.IsNullOrWhiteSpace(branch)
+            ? "{\\H1200;\\C3;Steps}"
+            : "{\\H1200;\\C3;Steps}  {\\H700;\\C7;branch: " + branch + "}";
         header.Location = new Point3d(startPt.X, currentY + 2000, 0);
         header.TextHeight = 1200;
         header.Layer = InfoLayer;

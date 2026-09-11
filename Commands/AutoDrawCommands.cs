@@ -54,7 +54,8 @@ public class AutoDrawCommands
             foreach (ObjectId id in ms)
             {
                 Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
-                if (ent != null && ent.Layer != AutoDrawVisualizer.InfoLayer) count++;
+                if (ent != null && ent.Layer != AutoDrawVisualizer.InfoLayer
+                    && ent.Layer != AutoDrawVisualizer.NotesLayer) count++;
             }
             tr.Commit();
         }
@@ -136,7 +137,7 @@ public class AutoDrawCommands
                  using (Transaction tr = db.TransactionManager.StartTransaction())
                  {
                      erased = DxfTransferService.EraseAllExcept(
-                         tr, db, new[] { AutoDrawVisualizer.InfoLayer });
+                         tr, db, new[] { AutoDrawVisualizer.InfoLayer, AutoDrawVisualizer.NotesLayer });
                      tr.Commit();
                  }
 
@@ -152,9 +153,10 @@ public class AutoDrawCommands
                      BlockTableRecord btr = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
 
                      Point3d origin = AutoDrawVisualizer.BoardOrigin(tr, db);
-                     AutoDrawVisualizer.DrawStatusBoard(tr, btr, data.AutodrawConfig, data.AutodrawMeta, origin);
-                     AutoDrawVisualizer.DrawCableSummary(tr, btr, db, data.AutodrawRecord);
-
+                     AutoDrawVisualizer.DrawStatusBoard(tr, btr, data.AutodrawConfig, data.AutodrawMeta, origin,
+                        autodraw.AutoDraw.CurrentBranch);
+                    RedrawNotes(tr, db, btr, data.Notes);
+ 
                      tr.Commit();
                  }
              }
@@ -203,6 +205,96 @@ public class AutoDrawCommands
             answers[field.Key] = value;
         }
         return answers;
+    }
+
+    /// <summary>
+    /// Redraw the notes panel from what the server just sent. Like the status
+    /// board it is rebuilt every time rather than kept in the drawing, so it
+    /// always describes the branch now loaded.
+    /// </summary>
+    private static void RedrawNotes(Transaction tr, Database db, BlockTableRecord btr, List<NoteDTO> notes)
+    {
+        AutoDrawVisualizer.EnsureLayer(tr, db, AutoDrawVisualizer.NotesLayer);
+        AutoDrawVisualizer.ClearLayer(tr, db, AutoDrawVisualizer.NotesLayer);
+        AutoDrawVisualizer.DrawNotes(tr, btr, notes, AutoDrawVisualizer.NotesOrigin());
+    }
+
+    /// <summary>
+    /// Ask how far back to go. Empty means one step, as ADBACK always did.
+    /// A named substep is resolved against the config and read back for
+    /// confirmation, because undoing eight steps by mistyping one is a poor
+    /// way to find out the key was wrong.
+    /// </summary>
+    private static bool AskHowFarBack(Editor ed, out string toSubstep)
+    {
+        toSubstep = null;
+
+        PromptStringOptions options = new PromptStringOptions(
+            "\nBack to which substep, or Enter for one step: ")
+        {
+            AllowSpaces = false,
+        };
+        PromptResult answer = ed.GetString(options);
+        if (answer.Status != PromptStatus.OK) return false;
+
+        string wanted = answer.StringResult?.Trim();
+        if (string.IsNullOrWhiteSpace(wanted)) return true;      // one step
+
+        var config = autodraw.AutoDraw.CurrentProjectData?.AutodrawConfig;
+        if (config == null) { ed.WriteMessage("\nNo project loaded."); return false; }
+
+        foreach (ConfigStepDTO step in config.Steps)
+        {
+            foreach (ConfigSubstepDTO substep in step.Substeps)
+            {
+                bool hit = string.Equals(substep.Key, wanted, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(step.Key + "." + substep.Key, wanted, StringComparison.OrdinalIgnoreCase);
+                if (!hit) continue;
+
+                PromptKeywordOptions confirm = new PromptKeywordOptions(
+                    "\nUndo " + step.Label + " / " + substep.Label
+                    + " (" + step.Key + "." + substep.Key + ") and everything after it? ");
+                confirm.Keywords.Add("Yes");
+                confirm.Keywords.Add("No");
+                confirm.Keywords.Default = "Yes";
+                PromptResult said = ed.GetKeywords(confirm);
+                if (said.Status != PromptStatus.OK || said.StringResult != "Yes") return false;
+
+                toSubstep = step.Key + "." + substep.Key;
+                return true;
+            }
+        }
+
+        ed.WriteMessage("\nNo substep called '" + wanted + "'. Known keys:");
+        foreach (ConfigStepDTO step in config.Steps)
+        {
+            foreach (ConfigSubstepDTO substep in step.Substeps)
+            {
+                ed.WriteMessage("\n  " + step.Key + "." + substep.Key + "  - " + substep.Label);
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Ask what to call the line about to be started. Only reached when the
+    /// coming step has already been run from this exact state, so the question
+    /// is which of two lines you mean - not whether to overwrite anything.
+    /// </summary>
+    private static string AskForBranch(Editor ed, ContinueResponseDTO result)
+    {
+        ed.WriteMessage("\n" + result.Message);
+
+        string suffix = string.IsNullOrWhiteSpace(result.Suggested) ? "" : " <" + result.Suggested + ">";
+        PromptStringOptions options = new PromptStringOptions("\nName for this branch" + suffix + ": ")
+        {
+            AllowSpaces = false,
+        };
+        PromptResult answer = ed.GetString(options);
+        if (answer.Status != PromptStatus.OK) return null;
+
+        string value = answer.StringResult?.Trim();
+        return string.IsNullOrWhiteSpace(value) ? result.Suggested : value;
     }
 
     /// <summary>
@@ -308,12 +400,16 @@ public class AutoDrawCommands
 
         try
         {
-            var result = await autodraw.AutoDraw.Back(projectId);
+            if (!AskHowFarBack(ed, out string toSubstep)) { ed.WriteMessage("\nCancelled."); return; }
+
+            var result = await autodraw.AutoDraw.Back(projectId, toSubstep);
             if (!result.Success)
             {
                 ed.WriteMessage($"\nCannot go back: {result.Message}");
                 return;
             }
+
+            autodraw.AutoDraw.NoteBranch(result.Data?.Branch);
 
             // A full resync: the record is authoritative, so the drawing is
             // wiped and rebuilt from it - MPanel's geometry included, which is
@@ -324,7 +420,7 @@ public class AutoDrawCommands
                 using (Transaction tr = db.TransactionManager.StartTransaction())
                 {
                     erased = DxfTransferService.EraseAllExcept(
-                        tr, db, new[] { AutoDrawVisualizer.InfoLayer });
+                        tr, db, new[] { AutoDrawVisualizer.InfoLayer, AutoDrawVisualizer.NotesLayer });
                     tr.Commit();
                 }
 
@@ -343,8 +439,8 @@ public class AutoDrawCommands
                         tr, btr,
                         autodraw.AutoDraw.CurrentProjectData!.AutodrawConfig,
                         result.Data?.AutodrawMeta ?? autodraw.AutoDraw.CurrentProjectData!.AutodrawMeta,
-                        origin);
-                    AutoDrawVisualizer.DrawCableSummary(tr, btr, db, result.Data?.AutodrawRecord);
+                        origin, autodraw.AutoDraw.CurrentBranch);
+                    RedrawNotes(tr, db, btr, result.Notes);
 
                     tr.Commit();
                 }
@@ -357,6 +453,258 @@ public class AutoDrawCommands
             if (meta != null)
             {
                 ed.WriteMessage($"\nBack at step {meta.CurrentStep}, substep {meta.CurrentSubstep}.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ed.WriteMessage($"\nError: {ex.Message}");
+        }
+    }
+
+    [CommandMethod("ADNOTE")]
+    public async void NoteAutoDraw()
+    {
+        Document doc = Application.DocumentManager.MdiActiveDocument;
+        Editor ed = doc.Editor;
+        Database db = doc.Database;
+
+        if (!autodraw.Auth.IsLoggedIn)
+        {
+            ed.WriteMessage("\nPlease login first (ADLOGIN).");
+            return;
+        }
+        if (!await EnsureProject(ed)) return;
+
+        int projectId = autodraw.AutoDraw.CurrentProjectId!.Value;
+
+        PromptStringOptions options = new PromptStringOptions(
+            "\nNote for this state (Enter to clear): ")
+        {
+            AllowSpaces = true,
+        };
+        PromptResult answer = ed.GetString(options);
+        if (answer.Status != PromptStatus.OK) return;
+
+        try
+        {
+            var result = await autodraw.AutoDraw.Note(projectId, answer.StringResult?.Trim());
+            if (!result.Success)
+            {
+                ed.WriteMessage("\n" + result.Message);
+                return;
+            }
+
+            using (DocumentLock docLock = doc.LockDocument())
+            using (Transaction tr = db.TransactionManager.StartTransaction())
+            {
+                BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                BlockTableRecord btr = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
+                RedrawNotes(tr, db, btr, result.Notes);
+                tr.Commit();
+            }
+
+            ed.Regen();
+            string where = result.Data?.Target ?? "this state";
+            ed.WriteMessage(result.Data?.Pending == true
+                ? "\nNoted against " + where + ", held until that step runs."
+                : "\nNoted against " + where + ".");
+        }
+        catch (Exception ex)
+        {
+            ed.WriteMessage($"\nError: {ex.Message}");
+        }
+    }
+
+    [CommandMethod("ADBRANCH")]
+    public async void BranchAutoDraw()
+    {
+        Document doc = Application.DocumentManager.MdiActiveDocument;
+        Editor ed = doc.Editor;
+        Database db = doc.Database;
+
+        if (!autodraw.Auth.IsLoggedIn)
+        {
+            ed.WriteMessage("\nPlease login first (ADLOGIN).");
+            return;
+        }
+        if (!await EnsureProject(ed)) return;
+
+        int projectId = autodraw.AutoDraw.CurrentProjectId!.Value;
+
+        try
+        {
+            var listing = await autodraw.AutoDraw.Branches(projectId);
+            if (listing == null || listing.Branches == null || listing.Branches.Count == 0)
+            {
+                ed.WriteMessage("\nNo branches recorded yet.");
+                return;
+            }
+
+            ed.WriteMessage("\nBranches:");
+            for (int i = 0; i < listing.Branches.Count; i++)
+            {
+                BranchDTO branch = listing.Branches[i];
+                bool atTip = listing.CurrentArtifactId == branch.TipArtifactId;
+                ed.WriteMessage("\n  " + (i + 1) + ") " + (branch.Current ? "* " : "  ") + branch.Name
+                                + "  at " + branch.StepKey + "." + branch.SubstepKey
+                                + ", " + branch.EntityCount + " entities"
+                                + (atTip ? "  (here)" : ""));
+            }
+
+            // Offered even with a single branch: jumping to its tip is how you
+            // undo a run of ADBACKs in one move.
+            PromptStringOptions options = new PromptStringOptions("\nLoad which, by number or name <stay>: ")
+            {
+                AllowSpaces = false,
+            };
+            PromptResult answer = ed.GetString(options);
+            if (answer.Status != PromptStatus.OK) return;
+
+            string wanted = answer.StringResult?.Trim();
+            if (string.IsNullOrWhiteSpace(wanted)) return;
+
+            // A number picks off the list; anything else is taken as a name.
+            if (int.TryParse(wanted, out int picked))
+            {
+                if (picked < 1 || picked > listing.Branches.Count)
+                {
+                    ed.WriteMessage("\nNo branch " + picked + ".");
+                    return;
+                }
+                wanted = listing.Branches[picked - 1].Name;
+            }
+
+            BranchDTO chosen = listing.Branches.FirstOrDefault(b => b.Name == wanted);
+            if (chosen != null && listing.CurrentArtifactId == chosen.TipArtifactId)
+            {
+                ed.WriteMessage("\nAlready at the tip of " + wanted + ".");
+                return;
+            }
+
+            var result = await autodraw.AutoDraw.SwitchBranch(projectId, wanted);
+            if (!result.Success)
+            {
+                ed.WriteMessage("\n" + result.Message);
+                return;
+            }
+            autodraw.AutoDraw.NoteBranch(result.Data?.Branch ?? wanted);
+
+            // Another line may have reached a different point entirely, so the
+            // drawing is replaced rather than merged into - the same full
+            // resync reverting does.
+            int erased = 0, imported = 0;
+            using (DocumentLock docLock = doc.LockDocument())
+            {
+                using (Transaction tr = db.TransactionManager.StartTransaction())
+                {
+                    erased = DxfTransferService.EraseAllExcept(
+                        tr, db, new[] { AutoDrawVisualizer.InfoLayer, AutoDrawVisualizer.NotesLayer });
+                    tr.Commit();
+                }
+
+                imported = DxfTransferService.ImportBase64(db, result.Dxf);
+
+                using (Transaction tr = db.TransactionManager.StartTransaction())
+                {
+                    AutoDrawVisualizer.EnsureInfoLayer(tr, db);
+                    AutoDrawVisualizer.ClearInfoLayer(tr, db);
+
+                    BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                    BlockTableRecord btr = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
+
+                    Point3d origin = AutoDrawVisualizer.BoardOrigin(tr, db);
+                    AutoDrawVisualizer.DrawStatusBoard(
+                        tr, btr,
+                        autodraw.AutoDraw.CurrentProjectData!.AutodrawConfig,
+                        result.Data?.AutodrawMeta ?? autodraw.AutoDraw.CurrentProjectData!.AutodrawMeta,
+                        origin, autodraw.AutoDraw.CurrentBranch);
+                    RedrawNotes(tr, db, btr, result.Notes);
+
+                    tr.Commit();
+                }
+            }
+
+            ed.Regen();
+            ed.WriteMessage("\nOn " + wanted + ": wiped " + erased + ", redrew " + imported + ".");
+        }
+        catch (Exception ex)
+        {
+            ed.WriteMessage($"\nError: {ex.Message}");
+        }
+    }
+
+    [CommandMethod("ADFORWARD")]
+    public async void ForwardAutoDraw()
+    {
+        Document doc = Application.DocumentManager.MdiActiveDocument;
+        Editor ed = doc.Editor;
+        Database db = doc.Database;
+
+        if (!autodraw.Auth.IsLoggedIn)
+        {
+            ed.WriteMessage("\nPlease login first (ADLOGIN).");
+            return;
+        }
+        if (!await EnsureProject(ed)) return;
+
+        int projectId = autodraw.AutoDraw.CurrentProjectId!.Value;
+
+        try
+        {
+            var result = await autodraw.AutoDraw.Forward(projectId);
+            if (!result.Success)
+            {
+                // Nothing ahead is the ordinary case at the front of the job,
+                // not a failure worth dressing up as one.
+                ed.WriteMessage($"\n{result.Message}");
+                return;
+            }
+
+            autodraw.AutoDraw.NoteBranch(result.Data?.Branch);
+
+            // The step is not run again - the server restores a drawing it made
+            // before - so this is the same full resync reverting does.
+            int erased = 0, imported = 0;
+            using (DocumentLock docLock = doc.LockDocument())
+            {
+                using (Transaction tr = db.TransactionManager.StartTransaction())
+                {
+                    erased = DxfTransferService.EraseAllExcept(
+                        tr, db, new[] { AutoDrawVisualizer.InfoLayer, AutoDrawVisualizer.NotesLayer });
+                    tr.Commit();
+                }
+
+                imported = DxfTransferService.ImportBase64(db, result.Dxf);
+
+                using (Transaction tr = db.TransactionManager.StartTransaction())
+                {
+                    AutoDrawVisualizer.EnsureInfoLayer(tr, db);
+                    AutoDrawVisualizer.ClearInfoLayer(tr, db);
+
+                    BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                    BlockTableRecord btr = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
+
+                    Point3d origin = AutoDrawVisualizer.BoardOrigin(tr, db);
+                    AutoDrawVisualizer.DrawStatusBoard(
+                        tr, btr,
+                        autodraw.AutoDraw.CurrentProjectData!.AutodrawConfig,
+                        result.Data?.AutodrawMeta ?? autodraw.AutoDraw.CurrentProjectData!.AutodrawMeta,
+                        origin, autodraw.AutoDraw.CurrentBranch);
+                    RedrawNotes(tr, db, btr, result.Notes);
+
+                    tr.Commit();
+                }
+            }
+
+            ed.Regen();
+            ed.WriteMessage($"\nWiped {erased}, redrew {imported}.");
+
+            var meta = result.Data?.AutodrawMeta;
+            if (meta != null)
+            {
+                ed.WriteMessage(meta.IsComplete
+                    ? "\nComplete."
+                    : $"\nForward at step {meta.CurrentStep}, substep {meta.CurrentSubstep}.");
             }
         }
         catch (Exception ex)
@@ -390,7 +738,7 @@ public class AutoDrawCommands
             using (DocumentLock docLock = doc.LockDocument())
             {
                 exported = DxfTransferService.ExportModelspace(
-                    db, path, new[] { AutoDrawVisualizer.InfoLayer });
+                    db, path, new[] { AutoDrawVisualizer.InfoLayer, AutoDrawVisualizer.NotesLayer });
             }
             // A drawing that carries none of the server's entities while the
             // record holds geometry is not in step - submitting it would report
@@ -410,13 +758,29 @@ public class AutoDrawCommands
             string chosen = ChooseOption(ed);
             var result = await autodraw.AutoDraw.Continue(projectId, path, chosen);
 
+            // A fork has to be named before the drawing is stored, because the
+            // submission is the new line's first artifact. So unlike answering
+            // a question, this retry carries the file again.
+            string branchName = null;
+            if (!result.Success && result.Error == "needs_branch")
+            {
+                branchName = AskForBranch(ed, result);
+                if (branchName == null) { ed.WriteMessage("\nCancelled."); return; }
+                result = await autodraw.AutoDraw.Continue(projectId, path, chosen, null, branchName);
+                autodraw.AutoDraw.NoteBranch(branchName);
+            }
+
             // A step may ask for values before it can run. Answer and call again
             // without the drawing - it is already submitted.
             if (!result.Success && result.Error == "needs_input" && result.Inputs != null)
             {
                 var answers = AskFor(ed, result.Inputs);
                 if (answers == null) { ed.WriteMessage("\nCancelled."); return; }
-                result = await autodraw.AutoDraw.Continue(projectId, null, chosen, answers);
+                // The name goes with it. The submission already put this line on
+                // the new branch, so it would be inherited anyway - but relying
+                // on that silently drops the branch for any caller that answers
+                // without having sent a drawing first.
+                result = await autodraw.AutoDraw.Continue(projectId, null, chosen, answers, branchName);
             }
 
             // 2. A gate is a normal outcome, not a failure. Report and stop -
@@ -431,15 +795,37 @@ public class AutoDrawCommands
             {
                 var art = result.SubmittedArtifact;
                 ed.WriteMessage($"\nAccepted {art.EntityCount} entities (ignored {art.IgnoredCount} outside the contract).");
+                autodraw.AutoDraw.NoteBranch(art.Branch);
             }
 
-            // 3. Redraw: erase what the server owns, lay its replacement in.
+            var carry = result.Data?.Carry;
+            if (carry != null && carry.Dropped > 0)
+            {
+                string layers = carry.ByLayer == null
+                    ? ""
+                    : " (" + string.Join(", ", carry.ByLayer.Select(p => p.Key + " " + p.Value)) + ")";
+                ed.WriteMessage(carry.Applied
+                    ? "\nThis step dropped " + carry.Dropped + " entities" + layers
+                      + ". ADBACK restores them."
+                    : "\nKept everything; this step would have dropped " + carry.Dropped
+                      + " entities" + layers + ".");
+            }
+
+            // 3. Redraw. Normally the server owns what it drew, so erasing its
+            // entities and laying the replacements in is enough. When a step has
+            // dropped geometry the whole drawing is rebuilt instead: EraseOwned
+            // deliberately spares anything marked owner=cad, so MPanel's mesh
+            // would otherwise linger in the drawing after leaving the record and
+            // be submitted back as new geometry next time.
             int erased = 0, imported = 0;
             using (DocumentLock docLock = doc.LockDocument())
             {
                 using (Transaction tr = db.TransactionManager.StartTransaction())
                 {
-                    erased = DxfTransferService.EraseOwned(tr, db);
+                    erased = result.Resync
+                        ? DxfTransferService.EraseAllExcept(
+                            tr, db, new[] { AutoDrawVisualizer.InfoLayer })
+                        : DxfTransferService.EraseOwned(tr, db);
                     tr.Commit();
                 }
 
@@ -458,8 +844,8 @@ public class AutoDrawCommands
                         tr, btr,
                         autodraw.AutoDraw.CurrentProjectData!.AutodrawConfig,
                         result.Data?.AutodrawMeta ?? autodraw.AutoDraw.CurrentProjectData!.AutodrawMeta,
-                        origin);
-                    AutoDrawVisualizer.DrawCableSummary(tr, btr, db, result.Data?.AutodrawRecord);
+                        origin, autodraw.AutoDraw.CurrentBranch);
+                    RedrawNotes(tr, db, btr, result.Notes);
 
                     tr.Commit();
                 }

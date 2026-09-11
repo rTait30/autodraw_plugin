@@ -46,6 +46,10 @@ public class ProjectDetailsDTO
     [JsonProperty("dxf")]
     public string? Dxf { get; set; }
 
+    /// <summary>The loaded lineage's notes, for the NOTES layer.</summary>
+    [JsonProperty("notes")]
+    public List<NoteDTO>? Notes { get; set; }
+
     [JsonProperty("dxf_scope")]
     public string? DxfScope { get; set; }
 }
