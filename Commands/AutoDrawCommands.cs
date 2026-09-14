@@ -220,17 +220,21 @@ public class AutoDrawCommands
     }
 
     /// <summary>
-    /// Ask how far back to go. Empty means one step, as ADBACK always did.
+    /// Ask which substep to go to. Empty means one step, as it always did.
+    ///
     /// A named substep is resolved against the config and read back for
-    /// confirmation, because undoing eight steps by mistyping one is a poor
-    /// way to find out the key was wrong.
+    /// confirmation, because moving eight steps by mistyping one is a poor way
+    /// to find out the key was wrong. A substep can also be given by position -
+    /// `3.1` is step three substep one, the numbers the board prints - which is
+    /// resolved here so the confirmation names it the same way either way.
     /// </summary>
-    private static bool AskHowFarBack(Editor ed, out string toSubstep)
+    private static bool AskWhichSubstep(Editor ed, string verb, string andAfter,
+                                        out string toSubstep)
     {
         toSubstep = null;
 
         PromptStringOptions options = new PromptStringOptions(
-            "\nBack to which substep, or Enter for one step: ")
+            "\n" + verb + " to which substep, or Enter for one step: ")
         {
             AllowSpaces = false,
         };
@@ -243,17 +247,21 @@ public class AutoDrawCommands
         var config = autodraw.AutoDraw.CurrentProjectData?.AutodrawConfig;
         if (config == null) { ed.WriteMessage("\nNo project loaded."); return false; }
 
-        foreach (ConfigStepDTO step in config.Steps)
+        for (int i = 0; i < config.Steps.Count; i++)
         {
-            foreach (ConfigSubstepDTO substep in step.Substeps)
+            ConfigStepDTO step = config.Steps[i];
+            for (int j = 0; j < step.Substeps.Count; j++)
             {
+                ConfigSubstepDTO substep = step.Substeps[j];
                 bool hit = string.Equals(substep.Key, wanted, StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(step.Key + "." + substep.Key, wanted, StringComparison.OrdinalIgnoreCase);
+                    || string.Equals(step.Key + "." + substep.Key, wanted, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(i + "." + j, wanted, StringComparison.Ordinal)
+                    || (j == 0 && string.Equals(i.ToString(), wanted, StringComparison.Ordinal));
                 if (!hit) continue;
 
                 PromptKeywordOptions confirm = new PromptKeywordOptions(
-                    "\nUndo " + step.Label + " / " + substep.Label
-                    + " (" + step.Key + "." + substep.Key + ") and everything after it? ");
+                    "\n" + verb + " to " + step.Label + " / " + substep.Label
+                    + " (" + step.Key + "." + substep.Key + ")" + andAfter + "? ");
                 confirm.Keywords.Add("Yes");
                 confirm.Keywords.Add("No");
                 confirm.Keywords.Default = "Yes";
@@ -266,11 +274,13 @@ public class AutoDrawCommands
         }
 
         ed.WriteMessage("\nNo substep called '" + wanted + "'. Known keys:");
-        foreach (ConfigStepDTO step in config.Steps)
+        for (int i = 0; i < config.Steps.Count; i++)
         {
-            foreach (ConfigSubstepDTO substep in step.Substeps)
+            ConfigStepDTO step = config.Steps[i];
+            for (int j = 0; j < step.Substeps.Count; j++)
             {
-                ed.WriteMessage("\n  " + step.Key + "." + substep.Key + "  - " + substep.Label);
+                ed.WriteMessage("\n  " + i + "." + j + "  " + step.Key + "."
+                                + step.Substeps[j].Key + "  - " + step.Substeps[j].Label);
             }
         }
         return false;
@@ -400,7 +410,9 @@ public class AutoDrawCommands
 
         try
         {
-            if (!AskHowFarBack(ed, out string toSubstep)) { ed.WriteMessage("\nCancelled."); return; }
+            if (!AskWhichSubstep(ed, "Back", " and everything after it",
+                                 out string toSubstep))
+            { ed.WriteMessage("\nCancelled."); return; }
 
             var result = await autodraw.AutoDraw.Back(projectId, toSubstep);
             if (!result.Success)
@@ -651,7 +663,10 @@ public class AutoDrawCommands
 
         try
         {
-            var result = await autodraw.AutoDraw.Forward(projectId);
+            if (!AskWhichSubstep(ed, "Forward", "", out string toSubstep))
+            { ed.WriteMessage("\nCancelled."); return; }
+
+            var result = await autodraw.AutoDraw.Forward(projectId, toSubstep);
             if (!result.Success)
             {
                 // Nothing ahead is the ordinary case at the front of the job,
@@ -713,8 +728,39 @@ public class AutoDrawCommands
         }
     }
 
+    /// <summary>
+    /// Take the next step. ADCONTINUE takes one; ADRUN takes as many as the
+    /// server can without a person.
+    /// </summary>
     [CommandMethod("ADCONTINUE")]
-    public async void ContinueAutoDraw()
+    public async void ContinueAutoDraw() => await Advance(null);
+
+    /// <summary>
+    /// Run on until something needs a person: a step they draw, a question, or
+    /// the end of the job.
+    ///
+    /// The saving is not the round trips but what they carry. Every continue
+    /// sends the modelspace up and the drawing back down, so a dozen steps is
+    /// two dozen transfers of the whole drawing and as many codec passes. A run
+    /// submits once and replies once; the states in between are recorded on the
+    /// server and never drawn here, which is why ADBACK and ADFORWARD can still
+    /// reach every one of them afterwards.
+    /// </summary>
+    [CommandMethod("ADRUN")]
+    public async void RunAutoDraw()
+    {
+        Document doc = Application.DocumentManager.MdiActiveDocument;
+        Editor ed = doc.Editor;
+
+        if (!AskWhichSubstep(ed, "Run", "", out string until))
+        { ed.WriteMessage("\nCancelled."); return; }
+
+        // Enter means "as far as you can", which is the reason to use ADRUN at
+        // all; a named substep stops there.
+        await Advance(string.IsNullOrWhiteSpace(until) ? "all" : until);
+    }
+
+    private async Task Advance(string run)
     {
         Document doc = Application.DocumentManager.MdiActiveDocument;
         Editor ed = doc.Editor;
@@ -756,7 +802,7 @@ public class AutoDrawCommands
             ed.WriteMessage($"\nSubmitting {exported} entities...");
 
             string chosen = ChooseOption(ed);
-            var result = await autodraw.AutoDraw.Continue(projectId, path, chosen);
+            var result = await autodraw.AutoDraw.Continue(projectId, path, chosen, null, null, run);
 
             // A fork has to be named before the drawing is stored, because the
             // submission is the new line's first artifact. So unlike answering
@@ -766,7 +812,7 @@ public class AutoDrawCommands
             {
                 branchName = AskForBranch(ed, result);
                 if (branchName == null) { ed.WriteMessage("\nCancelled."); return; }
-                result = await autodraw.AutoDraw.Continue(projectId, path, chosen, null, branchName);
+                result = await autodraw.AutoDraw.Continue(projectId, path, chosen, null, branchName, run);
                 autodraw.AutoDraw.NoteBranch(branchName);
             }
 
@@ -780,7 +826,7 @@ public class AutoDrawCommands
                 // the new branch, so it would be inherited anyway - but relying
                 // on that silently drops the branch for any caller that answers
                 // without having sent a drawing first.
-                result = await autodraw.AutoDraw.Continue(projectId, null, chosen, answers, branchName);
+                result = await autodraw.AutoDraw.Continue(projectId, null, chosen, answers, branchName, run);
             }
 
             // 2. A gate is a normal outcome, not a failure. Report and stop -
@@ -789,6 +835,17 @@ public class AutoDrawCommands
             {
                 ed.WriteMessage($"\nStopped: {result.Message}");
                 return;
+            }
+
+            if (result.Ran != null && result.Ran.Count > 1)
+            {
+                ed.WriteMessage("\nRan " + result.Ran.Count + " steps: "
+                                + string.Join(", ", result.Ran));
+                string stopped = result.Data?.StoppedBecause;
+                if (!string.IsNullOrWhiteSpace(stopped))
+                {
+                    ed.WriteMessage("\nStopped there: " + stopped);
+                }
             }
 
             if (result.SubmittedArtifact != null)
@@ -814,7 +871,7 @@ public class AutoDrawCommands
             // 3. Redraw. Normally the server owns what it drew, so erasing its
             // entities and laying the replacements in is enough. When a step has
             // dropped geometry the whole drawing is rebuilt instead: EraseOwned
-            // deliberately spares anything marked owner=cad, so MPanel's mesh
+            // deliberately spares anything marked owner=external, so MPanel's mesh
             // would otherwise linger in the drawing after leaving the record and
             // be submitted back as new geometry next time.
             int erased = 0, imported = 0;

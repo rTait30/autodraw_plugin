@@ -43,14 +43,14 @@ public class ProjectDetailsDTO
     public ArtifactSummaryDTO? CurrentArtifact { get; set; }
 
     /// <summary>Base64 DXF of the drawing as the server currently holds it.</summary>
-    [JsonProperty("dxf")]
+    [JsonProperty("drawing")]
     public string? Dxf { get; set; }
 
     /// <summary>The loaded lineage's notes, for the NOTES layer.</summary>
     [JsonProperty("notes")]
     public List<NoteDTO>? Notes { get; set; }
 
-    [JsonProperty("dxf_scope")]
+    [JsonProperty("drawing_scope")]
     public string? DxfScope { get; set; }
 }
 

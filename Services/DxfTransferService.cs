@@ -39,11 +39,11 @@ public static class DxfTransferService
 
                 // A full-scope copy stamps a fid on everything, MPanel's mesh
                 // included. Only the server's own entities may be erased - it
-                // cannot redraw anything marked owner=cad.
+                // cannot redraw anything marked owner=external.
                 bool foreign = false;
                 foreach (TypedValue value in rb)
                 {
-                    if (value.TypeCode == 1000 && (value.Value as string) == "owner=cad")
+                    if (value.TypeCode == 1000 && (value.Value as string) == "owner=external")
                     {
                         foreign = true;
                         break;

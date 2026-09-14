@@ -199,7 +199,7 @@ public static class AutoDrawVisualizer
             string colorCode = isPast ? "\\C3;" : (isCurrent ? "\\C7;" : "\\C252;");
 
             MText stepText = new MText();
-            stepText.Contents = $"{colorCode}Step {i}: {step.Label}";
+            stepText.Contents = $"{colorCode}Step {i}: {step.Label}  {{\\C252;[{step.Key}]}}";
             stepText.Location = new Point3d(startPt.X, currentY, 0);
             stepText.TextHeight = textHeightStep;
             stepText.Layer = InfoLayer;
@@ -210,12 +210,24 @@ public static class AutoDrawVisualizer
 
             for (int j = 0; j < step.Substeps.Count; j++)
             {
+                var substep = step.Substeps[j];
                 bool isCurrentSub = (isCurrent && j == meta.CurrentSubstep);
                 string prefix = isCurrentSub ? ">> " : "   ";
 
+                // Whether a substep runs on the server is a property of the
+                // option that will be chosen, not of the substep. The server
+                // picks the one that was asked for, else the default, else the
+                // first; the board cannot know what will be asked for, so it
+                // shows what would happen if nothing were - which is what the
+                // designer is looking at when they read it.
+                var option = substep.Options?.FirstOrDefault(o => o.IsDefault)
+                             ?? substep.Options?.FirstOrDefault();
+                bool manual = option != null && !option.Automated;
+
                 MText subText = new MText();
                 subText.ColorIndex = (int)(isCurrentSub ? 1 : 7);
-                subText.Contents = $"{colorCode}{prefix}{step.Substeps[j].Label}";
+                subText.Contents = $"{colorCode}{prefix}{substep.Label}  {{\\C252;[{substep.Key}]}}"
+                                 + (manual ? "  {\\C2;(MANUAL)}" : "");
                 subText.Location = new Point3d(startPt.X + 1000, currentY, 0);
                 subText.TextHeight = textHeightSub;
                 subText.Layer = InfoLayer;

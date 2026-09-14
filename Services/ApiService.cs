@@ -77,7 +77,7 @@ public static class ApiService
 
         var file = new ByteArrayContent(File.ReadAllBytes(dxfPath));
         file.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-        form.Add(file, "dxf", Path.GetFileName(dxfPath));
+        form.Add(file, "drawing", Path.GetFileName(dxfPath));
 
         if (fields != null)
         {

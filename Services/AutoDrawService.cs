@@ -40,7 +40,7 @@ namespace autodraw_plugin.Services
         {
             CurrentProjectId = projectId;
 
-            string endpoint = $"/automation/start/{projectId}?dxf_scope={scope}";
+            string endpoint = $"/automation/start/{projectId}?drawing_scope={scope}";
             HttpResponseMessage response = await ApiService.Get(endpoint);
             string json = await response.Content.ReadAsStringAsync();
 
@@ -55,11 +55,15 @@ namespace autodraw_plugin.Services
         /// </summary>
         public async Task<ContinueResponseDTO> Continue(
             int projectId, string dxfPath, string? selectedOption = null,
-            IDictionary<string, string>? answers = null, string? branch = null)
+            IDictionary<string, string>? answers = null, string? branch = null,
+            string? run = null)
         {
             var fields = new Dictionary<string, string>();
             if (!string.IsNullOrEmpty(selectedOption)) fields["selected_option"] = selectedOption;
             if (!string.IsNullOrEmpty(branch)) fields["branch"] = branch;
+            // How far to go: absent is one substep, "all" runs until something
+            // stops it, a count caps it, a substep key or "3.1" stops there.
+            if (!string.IsNullOrEmpty(run)) fields["run"] = run;
             if (answers != null && answers.Count > 0)
             {
                 fields["inputs"] = JsonConvert.SerializeObject(answers);
@@ -136,10 +140,13 @@ namespace autodraw_plugin.Services
         /// server restores a drawing it already made and hands back the whole
         /// of it, exactly as reverting does.
         /// </summary>
-        public async Task<ContinueResponseDTO> Forward(int projectId)
+        public async Task<ContinueResponseDTO> Forward(int projectId, string? toSubstep = null)
         {
+            var fields = new Dictionary<string, string>();
+            if (!string.IsNullOrWhiteSpace(toSubstep)) fields["to_substep"] = toSubstep;
+
             HttpResponseMessage response = await ApiService.PostForm(
-                $"/automation/forward/{projectId}", new Dictionary<string, string>());
+                $"/automation/forward/{projectId}", fields);
 
             return await Interpret(response, "ADFORWARD");
         }

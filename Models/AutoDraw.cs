@@ -177,10 +177,14 @@ public class ContinueResponseDTO
     [JsonProperty("submitted_artifact")]
     public ArtifactSummaryDTO? SubmittedArtifact { get; set; }
 
-    [JsonProperty("dxf")]
+    /// <summary>Every substep this call took, when it took more than one.</summary>
+    [JsonProperty("ran")]
+    public List<string>? Ran { get; set; }
+
+    [JsonProperty("drawing")]
     public string? Dxf { get; set; }
 
-    [JsonProperty("dxf_scope")]
+    [JsonProperty("drawing_scope")]
     public string? DxfScope { get; set; }
 
     /// <summary>
@@ -218,6 +222,10 @@ public class ContinueDataDTO
 {
     [JsonProperty("autodraw_meta")]
     public AutoDrawMetaDTO AutodrawMeta { get; set; } = new();
+
+    /// <summary>Why a run stopped short, when it did. Null on a clean finish.</summary>
+    [JsonProperty("stopped_because")]
+    public string? StoppedBecause { get; set; }
 
     [JsonProperty("autodraw_record")]
     public AutoDrawRecordDTO AutodrawRecord { get; set; } = new();
