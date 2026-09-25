@@ -146,6 +146,10 @@ public class AutoDrawCommands
                  // Then the board, clear of whatever was just drawn.
                  using (Transaction tr = db.TransactionManager.StartTransaction())
                  {
+                     // Cloning the server's entities in gave them new handles,
+                     // so the groups it sent refer to nothing. Rebuild them.
+                     PieceGroupService.Rebuild(tr, db);
+
                      AutoDrawVisualizer.EnsureInfoLayer(tr, db);
                      AutoDrawVisualizer.ClearInfoLayer(tr, db);
 
@@ -440,6 +444,10 @@ public class AutoDrawCommands
 
                 using (Transaction tr = db.TransactionManager.StartTransaction())
                 {
+                    // Cloning the server's entities in gave them new handles,
+                    // so the groups it sent refer to nothing. Rebuild them.
+                    PieceGroupService.Rebuild(tr, db);
+
                     AutoDrawVisualizer.EnsureInfoLayer(tr, db);
                     AutoDrawVisualizer.ClearInfoLayer(tr, db);
 
@@ -618,6 +626,10 @@ public class AutoDrawCommands
 
                 using (Transaction tr = db.TransactionManager.StartTransaction())
                 {
+                    // Cloning the server's entities in gave them new handles,
+                    // so the groups it sent refer to nothing. Rebuild them.
+                    PieceGroupService.Rebuild(tr, db);
+
                     AutoDrawVisualizer.EnsureInfoLayer(tr, db);
                     AutoDrawVisualizer.ClearInfoLayer(tr, db);
 
@@ -693,6 +705,10 @@ public class AutoDrawCommands
 
                 using (Transaction tr = db.TransactionManager.StartTransaction())
                 {
+                    // Cloning the server's entities in gave them new handles,
+                    // so the groups it sent refer to nothing. Rebuild them.
+                    PieceGroupService.Rebuild(tr, db);
+
                     AutoDrawVisualizer.EnsureInfoLayer(tr, db);
                     AutoDrawVisualizer.ClearInfoLayer(tr, db);
 
@@ -890,6 +906,10 @@ public class AutoDrawCommands
 
                 using (Transaction tr = db.TransactionManager.StartTransaction())
                 {
+                    // Cloning the server's entities in gave them new handles,
+                    // so the groups it sent refer to nothing. Rebuild them.
+                    PieceGroupService.Rebuild(tr, db);
+
                     AutoDrawVisualizer.EnsureInfoLayer(tr, db);
                     AutoDrawVisualizer.ClearInfoLayer(tr, db);
 
