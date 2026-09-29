@@ -127,45 +127,7 @@ public class AutoDrawCommands
                  return;
              }
 
-             int erased = 0, imported = 0;
-
-             using (DocumentLock docLock = doc.LockDocument())
-             {
-                 // A full resync: everything except the INFO board goes, and the
-                 // server's full-scope copy replaces it - MPanel's geometry
-                 // included, so a half-done job comes back complete.
-                 using (Transaction tr = db.TransactionManager.StartTransaction())
-                 {
-                     erased = DxfTransferService.EraseAllExcept(
-                         tr, db, new[] { AutoDrawVisualizer.InfoLayer, AutoDrawVisualizer.NotesLayer });
-                     tr.Commit();
-                 }
-
-                 imported = DxfTransferService.ImportBase64(db, data.Dxf);
-
-                 // Then the board, clear of whatever was just drawn.
-                 using (Transaction tr = db.TransactionManager.StartTransaction())
-                 {
-                     // Cloning the server's entities in gave them new handles,
-                     // so the groups it sent refer to nothing. Rebuild them.
-                     PieceGroupService.Rebuild(tr, db);
-
-                     AutoDrawVisualizer.EnsureInfoLayer(tr, db);
-                     AutoDrawVisualizer.ClearInfoLayer(tr, db);
-
-                     BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
-                     BlockTableRecord btr = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
-
-                     Point3d origin = AutoDrawVisualizer.BoardOrigin(tr, db);
-                     AutoDrawVisualizer.DrawStatusBoard(tr, btr, data.AutodrawConfig, data.AutodrawMeta, origin,
-                        autodraw.AutoDraw.CurrentBranch);
-                    RedrawNotes(tr, db, btr, data.Notes);
- 
-                     tr.Commit();
-                 }
-             }
-
-             ed.Regen();
+             var (erased, imported) = await LayInFetched(doc, data);
              ed.WriteMessage($"\nProject {data.ProjectId} - {data.ProjectName}");
              ed.WriteMessage($"\nErased {erased} server entities, drew {imported}.");
              ed.WriteMessage($"\nSubmitting layers: {string.Join(", ", data.Submission.Layers)}");
@@ -175,6 +137,78 @@ public class AutoDrawCommands
         {
              ed.WriteMessage($"\nError: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Fetch the job again and lay the whole of it in, with no questions. What
+    /// a change of layout does: the server does the placing, so seeing the job
+    /// in another layout means asking for it in that one.
+    /// </summary>
+    private static async Task LayIn(Document doc, int projectId)
+    {
+        Editor ed = doc.Editor;
+        await autodraw.AutoDraw.StartProject(projectId);
+        if (!autodraw.AutoDraw.HasActiveProject)
+        {
+            ed.WriteMessage("\nFailed to load project data. Check API or ID.");
+            return;
+        }
+        var (erased, imported) = await LayInFetched(doc, autodraw.AutoDraw.CurrentProjectData!);
+        ed.WriteMessage($"\nLaid out again: erased {erased}, drew {imported}.");
+    }
+
+    /// <summary>
+    /// Replace the drawing with the job as just fetched: the server's full
+    /// copy, the board, the notes, and the grid around it.
+    /// </summary>
+    private static async Task<(int erased, int imported)> LayInFetched(
+        Document doc, autodraw_plugin.Models.Projects.ProjectDetailsDTO data)
+    {
+        Editor ed = doc.Editor;
+        Database db = doc.Database;
+        int erased = 0, imported = 0;
+
+        using (DocumentLock docLock = doc.LockDocument())
+        {
+            // A full resync: everything except the INFO board goes, and the
+            // server's full-scope copy replaces it - MPanel's geometry
+            // included, so a half-done job comes back complete.
+            using (Transaction tr = db.TransactionManager.StartTransaction())
+            {
+                erased = DxfTransferService.EraseAllExcept(
+                    tr, db, AutoDrawVisualizer.DecorationLayers);
+                tr.Commit();
+            }
+
+            imported = DxfTransferService.ImportBase64(db, data.Dxf);
+
+            // Then the board, clear of whatever was just drawn.
+            using (Transaction tr = db.TransactionManager.StartTransaction())
+            {
+                // Cloning the server's entities in gave them new handles,
+                // so the groups it sent refer to nothing. Rebuild them.
+                RebuildDerived(tr, db, data.AutodrawRecord);
+
+                AutoDrawVisualizer.EnsureInfoLayer(tr, db);
+                AutoDrawVisualizer.ClearInfoLayer(tr, db);
+
+                BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                BlockTableRecord btr = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
+
+                Point3d origin = AutoDrawVisualizer.BoardOrigin(tr, db);
+                AutoDrawVisualizer.DrawStatusBoard(tr, btr, data.AutodrawConfig, data.AutodrawMeta, origin,
+                    autodraw.AutoDraw.CurrentBranch);
+                RedrawNotes(tr, db, btr, data.Notes);
+                GridService.DrawLabels(tr, db, btr, data.Grid);
+
+                tr.Commit();
+            }
+        }
+
+        await GridService.SyncSnapshots(doc, data.ProjectId, data.Grid,
+            data.AutodrawRecord, data.AutodrawConfig);
+        ed.Regen();
+        return (erased, imported);
     }
 
     /// <summary>
@@ -233,12 +267,12 @@ public class AutoDrawCommands
     /// resolved here so the confirmation names it the same way either way.
     /// </summary>
     private static bool AskWhichSubstep(Editor ed, string verb, string andAfter,
-                                        out string toSubstep)
+                                        out string toSubstep, string enterMeans = "one step")
     {
         toSubstep = null;
 
         PromptStringOptions options = new PromptStringOptions(
-            "\n" + verb + " to which substep, or Enter for one step: ")
+            "\n" + verb + " to which substep, or Enter for " + enterMeans + ": ")
         {
             AllowSpaces = false,
         };
@@ -425,18 +459,24 @@ public class AutoDrawCommands
                 return;
             }
 
-            autodraw.AutoDraw.NoteBranch(result.Data?.Branch);
+            // Stay on the branch being followed. Going back past its fork lands
+            // on states named after the line it forked from, and taking that
+            // name would send ADFORWARD down the other line.
+            if (autodraw.AutoDraw.CurrentBranch == null) autodraw.AutoDraw.NoteBranch(result.Data?.Branch);
 
             // A full resync: the record is authoritative, so the drawing is
             // wiped and rebuilt from it - MPanel's geometry included, which is
             // why the server sends the full scope back.
             int erased = 0, imported = 0;
+            Dictionary<string, string> before;
             using (DocumentLock docLock = doc.LockDocument())
             {
+                before = ChangeHighlightService.Snapshot(db);
+
                 using (Transaction tr = db.TransactionManager.StartTransaction())
                 {
                     erased = DxfTransferService.EraseAllExcept(
-                        tr, db, new[] { AutoDrawVisualizer.InfoLayer, AutoDrawVisualizer.NotesLayer });
+                        tr, db, AutoDrawVisualizer.DecorationLayers);
                     tr.Commit();
                 }
 
@@ -446,7 +486,7 @@ public class AutoDrawCommands
                 {
                     // Cloning the server's entities in gave them new handles,
                     // so the groups it sent refer to nothing. Rebuild them.
-                    PieceGroupService.Rebuild(tr, db);
+                    RebuildDerived(tr, db, result.Data?.AutodrawRecord ?? autodraw.AutoDraw.CurrentProjectData?.AutodrawRecord);
 
                     AutoDrawVisualizer.EnsureInfoLayer(tr, db);
                     AutoDrawVisualizer.ClearInfoLayer(tr, db);
@@ -461,12 +501,17 @@ public class AutoDrawCommands
                         result.Data?.AutodrawMeta ?? autodraw.AutoDraw.CurrentProjectData!.AutodrawMeta,
                         origin, autodraw.AutoDraw.CurrentBranch);
                     RedrawNotes(tr, db, btr, result.Notes);
+                    GridService.DrawLabels(tr, db, btr, result.Grid);
 
                     tr.Commit();
                 }
             }
 
+            await GridService.SyncSnapshots(doc, autodraw.AutoDraw.CurrentProjectId!.Value, result.Grid,
+                result.Data?.AutodrawRecord ?? autodraw.AutoDraw.CurrentProjectData?.AutodrawRecord,
+                autodraw.AutoDraw.CurrentProjectData?.AutodrawConfig);
             ed.Regen();
+            ChangeHighlightService.Show(doc, before);
             ed.WriteMessage($"\nWiped {erased}, redrew {imported}.");
 
             var meta = result.Data?.AutodrawMeta;
@@ -618,7 +663,7 @@ public class AutoDrawCommands
                 using (Transaction tr = db.TransactionManager.StartTransaction())
                 {
                     erased = DxfTransferService.EraseAllExcept(
-                        tr, db, new[] { AutoDrawVisualizer.InfoLayer, AutoDrawVisualizer.NotesLayer });
+                        tr, db, AutoDrawVisualizer.DecorationLayers);
                     tr.Commit();
                 }
 
@@ -628,7 +673,7 @@ public class AutoDrawCommands
                 {
                     // Cloning the server's entities in gave them new handles,
                     // so the groups it sent refer to nothing. Rebuild them.
-                    PieceGroupService.Rebuild(tr, db);
+                    RebuildDerived(tr, db, result.Data?.AutodrawRecord ?? autodraw.AutoDraw.CurrentProjectData?.AutodrawRecord);
 
                     AutoDrawVisualizer.EnsureInfoLayer(tr, db);
                     AutoDrawVisualizer.ClearInfoLayer(tr, db);
@@ -643,11 +688,15 @@ public class AutoDrawCommands
                         result.Data?.AutodrawMeta ?? autodraw.AutoDraw.CurrentProjectData!.AutodrawMeta,
                         origin, autodraw.AutoDraw.CurrentBranch);
                     RedrawNotes(tr, db, btr, result.Notes);
+                    GridService.DrawLabels(tr, db, btr, result.Grid);
 
                     tr.Commit();
                 }
             }
 
+            await GridService.SyncSnapshots(doc, autodraw.AutoDraw.CurrentProjectId!.Value, result.Grid,
+                result.Data?.AutodrawRecord ?? autodraw.AutoDraw.CurrentProjectData?.AutodrawRecord,
+                autodraw.AutoDraw.CurrentProjectData?.AutodrawConfig);
             ed.Regen();
             ed.WriteMessage("\nOn " + wanted + ": wiped " + erased + ", redrew " + imported + ".");
         }
@@ -662,7 +711,6 @@ public class AutoDrawCommands
     {
         Document doc = Application.DocumentManager.MdiActiveDocument;
         Editor ed = doc.Editor;
-        Database db = doc.Database;
 
         if (!autodraw.Auth.IsLoggedIn)
         {
@@ -670,34 +718,77 @@ public class AutoDrawCommands
             return;
         }
         if (!await EnsureProject(ed)) return;
+        if (StopIfPlaying(ed)) return;
 
         int projectId = autodraw.AutoDraw.CurrentProjectId!.Value;
+        bool auto = PluginSettings.Current.Auto;
+
+        if (!AskWhichSubstep(ed, "Forward", "", out string toSubstep, auto ? "the end" : "one step"))
+        { ed.WriteMessage("\nCancelled."); return; }
+
+        if (!auto)
+        {
+            await ForwardOnce(doc, projectId, toSubstep);
+            return;
+        }
+
+        // Played one substep at a time rather than jumped in one move, so each
+        // state is drawn on the way. A target that is not ahead is refused
+        // before the first hop, as the server's own jump refuses it, rather
+        // than found out at the end of the job.
+        if (toSubstep != null && !IsAhead(toSubstep))
+        {
+            ed.WriteMessage($"\n{toSubstep} is not ahead of where the job is now.");
+            return;
+        }
+
+        await Play(doc, async first =>
+        {
+            ContinueResponseDTO result = await ForwardOnce(doc, projectId, null);
+            if (result == null || !result.Success) return false;
+            if (toSubstep != null
+                && string.Equals(result.Data?.Redone, toSubstep, StringComparison.OrdinalIgnoreCase))
+                return false;
+            return !(result.Data?.AutodrawMeta?.IsComplete ?? false);
+        });
+    }
+
+    /// <summary>
+    /// One forward, redrawn. Returns the server's reply, or null where the call
+    /// itself failed; either way the outcome has already been reported.
+    /// </summary>
+    private static async Task<ContinueResponseDTO> ForwardOnce(Document doc, int projectId, string toSubstep)
+    {
+        Editor ed = doc.Editor;
+        Database db = doc.Database;
 
         try
         {
-            if (!AskWhichSubstep(ed, "Forward", "", out string toSubstep))
-            { ed.WriteMessage("\nCancelled."); return; }
-
             var result = await autodraw.AutoDraw.Forward(projectId, toSubstep);
             if (!result.Success)
             {
                 // Nothing ahead is the ordinary case at the front of the job,
                 // not a failure worth dressing up as one.
                 ed.WriteMessage($"\n{result.Message}");
-                return;
+                return result;
             }
 
-            autodraw.AutoDraw.NoteBranch(result.Data?.Branch);
+            // Likewise, the states on the way back up to the branch still carry
+            // the older line's name.
+            if (autodraw.AutoDraw.CurrentBranch == null) autodraw.AutoDraw.NoteBranch(result.Data?.Branch);
 
             // The step is not run again - the server restores a drawing it made
             // before - so this is the same full resync reverting does.
             int erased = 0, imported = 0;
+            Dictionary<string, string> before;
             using (DocumentLock docLock = doc.LockDocument())
             {
+                before = ChangeHighlightService.Snapshot(db);
+
                 using (Transaction tr = db.TransactionManager.StartTransaction())
                 {
                     erased = DxfTransferService.EraseAllExcept(
-                        tr, db, new[] { AutoDrawVisualizer.InfoLayer, AutoDrawVisualizer.NotesLayer });
+                        tr, db, AutoDrawVisualizer.DecorationLayers);
                     tr.Commit();
                 }
 
@@ -707,7 +798,7 @@ public class AutoDrawCommands
                 {
                     // Cloning the server's entities in gave them new handles,
                     // so the groups it sent refer to nothing. Rebuild them.
-                    PieceGroupService.Rebuild(tr, db);
+                    RebuildDerived(tr, db, result.Data?.AutodrawRecord ?? autodraw.AutoDraw.CurrentProjectData?.AutodrawRecord);
 
                     AutoDrawVisualizer.EnsureInfoLayer(tr, db);
                     AutoDrawVisualizer.ClearInfoLayer(tr, db);
@@ -722,12 +813,17 @@ public class AutoDrawCommands
                         result.Data?.AutodrawMeta ?? autodraw.AutoDraw.CurrentProjectData!.AutodrawMeta,
                         origin, autodraw.AutoDraw.CurrentBranch);
                     RedrawNotes(tr, db, btr, result.Notes);
+                    GridService.DrawLabels(tr, db, btr, result.Grid);
 
                     tr.Commit();
                 }
             }
 
+            await GridService.SyncSnapshots(doc, autodraw.AutoDraw.CurrentProjectId!.Value, result.Grid,
+                result.Data?.AutodrawRecord ?? autodraw.AutoDraw.CurrentProjectData?.AutodrawRecord,
+                autodraw.AutoDraw.CurrentProjectData?.AutodrawConfig);
             ed.Regen();
+            ChangeHighlightService.Show(doc, before);
             ed.WriteMessage($"\nWiped {erased}, redrew {imported}.");
 
             var meta = result.Data?.AutodrawMeta;
@@ -737,10 +833,12 @@ public class AutoDrawCommands
                     ? "\nComplete."
                     : $"\nForward at step {meta.CurrentStep}, substep {meta.CurrentSubstep}.");
             }
+            return result;
         }
         catch (Exception ex)
         {
             ed.WriteMessage($"\nError: {ex.Message}");
+            return null;
         }
     }
 
@@ -749,7 +847,213 @@ public class AutoDrawCommands
     /// server can without a person.
     /// </summary>
     [CommandMethod("ADCONTINUE")]
-    public async void ContinueAutoDraw() => await Advance(null);
+    public async void ContinueAutoDraw()
+    {
+        Document doc = Application.DocumentManager.MdiActiveDocument;
+        Editor ed = doc.Editor;
+
+        if (StopIfPlaying(ed)) return;
+        if (!PluginSettings.Current.Auto)
+        {
+            await Advance(null);
+            return;
+        }
+
+        // One substep per tick, each submitted and drawn, where ADRUN takes them
+        // all on the server and draws once. The first substep goes whatever it
+        // is, exactly as a single ADCONTINUE would - a drawn step completes with
+        // the drawing the designer has just made. After that it stops short of
+        // any substep a person draws, the same place ADRUN stops, rather than
+        // submitting the untouched drawing as their work.
+        await Play(doc, async first =>
+        {
+            if (!first && NextIsDrawnByAPerson())
+            {
+                ed.WriteMessage("\nThe next substep is drawn by hand - stopping here.");
+                return false;
+            }
+            return await Advance(null);
+        });
+    }
+
+    /// <summary>
+    /// Whether the substep the job is at would be drawn by a person rather than
+    /// run. Resolved as the server resolves it for a run: the default option,
+    /// else the first.
+    /// </summary>
+    private static bool NextIsDrawnByAPerson()
+    {
+        var data = autodraw.AutoDraw.CurrentProjectData;
+        var meta = autodraw.AutoDraw.CurrentMeta;
+        var steps = data?.AutodrawConfig?.Steps;
+        if (steps == null || meta == null || meta.CurrentStep >= steps.Count) return false;
+
+        var substeps = steps[meta.CurrentStep].Substeps;
+        if (substeps == null || meta.CurrentSubstep >= substeps.Count) return false;
+
+        var options = substeps[meta.CurrentSubstep].Options;
+        var option = options?.FirstOrDefault(o => o.IsDefault) ?? options?.FirstOrDefault();
+        return option == null || !option.Automated;
+    }
+
+    /// <summary>Whether a step.substep key lies at or after where the job is now.</summary>
+    private static bool IsAhead(string key)
+    {
+        var data = autodraw.AutoDraw.CurrentProjectData;
+        var meta = autodraw.AutoDraw.CurrentMeta;
+        var steps = data?.AutodrawConfig?.Steps;
+        if (steps == null || meta == null || meta.IsComplete) return false;
+
+        for (int i = 0; i < steps.Count; i++)
+        {
+            for (int j = 0; j < steps[i].Substeps.Count; j++)
+            {
+                if (!string.Equals(steps[i].Key + "." + steps[i].Substeps[j].Key, key,
+                                   StringComparison.OrdinalIgnoreCase)) continue;
+                return i > meta.CurrentStep || (i == meta.CurrentStep && j >= meta.CurrentSubstep);
+            }
+        }
+        return false;
+    }
+
+    // Playing: taking substeps one after another, a tick apart.
+    //
+    // The command itself ends at its first await, so AutoCAD is free while a job
+    // plays and Escape has nothing to cancel. Starting any command stops it
+    // instead - ADSTOP says so plainly, but LINE or ZOOM does the same - at the
+    // end of the substep in hand, never half way through a redraw.
+    private static bool _playing;
+    private static bool _stopAsked;
+
+    private static async Task Play(Document doc, Func<bool, Task<bool>> takeOne)
+    {
+        Editor ed = doc.Editor;
+        _playing = true;
+        _stopAsked = false;
+        doc.CommandWillStart += AskToStop;
+        ed.WriteMessage($"\nPlaying, {PluginSettings.Current.TickSeconds:0.##}s a step. Any command (ADSTOP) stops it.");
+
+        try
+        {
+            for (bool first = true; ; first = false)
+            {
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                if (!await takeOne(first)) break;
+                if (_stopAsked) break;
+
+                // Stacked, every step lands in a column of its own, so the view
+                // goes with it rather than leaving the work off the screen.
+                if (GridService.Last?.Mode == "stack") GridService.Follow(ed, GridService.Last);
+
+                int wait = (int)(PluginSettings.Current.TickSeconds * 1000 - clock.ElapsedMilliseconds);
+                if (wait > 0) await Task.Delay(wait);
+                if (_stopAsked) break;
+            }
+            if (_stopAsked) ed.WriteMessage("\nStopped.");
+        }
+        finally
+        {
+            doc.CommandWillStart -= AskToStop;
+            _playing = false;
+        }
+    }
+
+    private static void AskToStop(object sender, CommandEventArgs e) => _stopAsked = true;
+
+    /// <summary>
+    /// A command that would move the job while one is already playing only
+    /// stops it: two lines of work advancing the same record at once would
+    /// interleave their submissions.
+    /// </summary>
+    private static bool StopIfPlaying(Editor ed)
+    {
+        if (!_playing) return false;
+        ed.WriteMessage("\nStopping the job that is playing - run it again once it has stopped.");
+        return true;
+    }
+
+    [CommandMethod("ADSTOP")]
+    public void StopAutoDraw()
+    {
+        // Starting this command is what stops a playing job; see Play.
+        Application.DocumentManager.MdiActiveDocument.Editor.WriteMessage(
+            _playing ? "\nStopping after this substep." : "\nNothing is playing.");
+    }
+
+    [CommandMethod("ADSETTINGS")]
+    public async void SettingsAutoDraw()
+    {
+        Document doc = Application.DocumentManager.MdiActiveDocument;
+        Editor ed = doc.Editor;
+        PluginSettings settings = PluginSettings.Current;
+        string laidOutAs = settings.Layout + "/" + settings.Direction;
+
+        while (true)
+        {
+            PromptKeywordOptions options = new PromptKeywordOptions(
+                $"\nAuto {(settings.Auto ? "On" : "Off")}, tick {settings.TickSeconds:0.##}s, "
+                + $"{settings.Layout} {settings.Direction}. Change [Auto/Tick/Layout/Direction] <done>: ");
+            options.Keywords.Add("Auto");
+            options.Keywords.Add("Tick");
+            options.Keywords.Add("Layout");
+            options.Keywords.Add("Direction");
+            options.AllowNone = true;
+
+            PromptResult picked = ed.GetKeywords(options);
+            if (picked.Status != PromptStatus.OK || string.IsNullOrEmpty(picked.StringResult)) break;
+
+            if (picked.StringResult == "Layout" || picked.StringResult == "Direction")
+            {
+                bool layout = picked.StringResult == "Layout";
+                PromptKeywordOptions which = new PromptKeywordOptions(layout
+                    ? "\nEach state [Replace/Stack], drawn over the last or kept beside it: "
+                    : "\nStacked states run [Right/Down]: ");
+                which.Keywords.Add(layout ? "Replace" : "Right");
+                which.Keywords.Add(layout ? "Stack" : "Down");
+                which.Keywords.Default = layout ? settings.Layout : settings.Direction;
+                PromptResult said = ed.GetKeywords(which);
+                if (said.Status != PromptStatus.OK) continue;
+                if (layout) settings.Layout = said.StringResult; else settings.Direction = said.StringResult;
+                settings.Save();
+                continue;
+            }
+
+            if (picked.StringResult == "Auto")
+            {
+                PromptKeywordOptions onOff = new PromptKeywordOptions(
+                    "\nADCONTINUE and ADFORWARD keep going on their own [On/Off]: ");
+                onOff.Keywords.Add("On");
+                onOff.Keywords.Add("Off");
+                onOff.Keywords.Default = settings.Auto ? "On" : "Off";
+                PromptResult said = ed.GetKeywords(onOff);
+                if (said.Status != PromptStatus.OK) continue;
+                settings.Auto = said.StringResult == "On";
+            }
+            else
+            {
+                PromptDoubleOptions tick = new PromptDoubleOptions("\nSeconds between substeps")
+                {
+                    AllowNegative = false,
+                    AllowZero = true,
+                    DefaultValue = settings.TickSeconds,
+                    UseDefaultValue = true,
+                };
+                PromptDoubleResult said = ed.GetDouble(tick);
+                if (said.Status != PromptStatus.OK) continue;
+                settings.TickSeconds = said.Value;
+            }
+
+            settings.Save();
+        }
+
+        // The layout is the server's to apply, so a change is seen by asking for
+        // the job again in it - the whole drawing, laid out afresh.
+        if (settings.Layout + "/" + settings.Direction != laidOutAs && autodraw.AutoDraw.HasActiveProject)
+        {
+            if (StopIfPlaying(ed)) return;
+            await LayIn(doc, autodraw.AutoDraw.CurrentProjectId!.Value);
+        }
+    }
 
     /// <summary>
     /// Run on until something needs a person: a step they draw, a question, or
@@ -776,7 +1080,11 @@ public class AutoDrawCommands
         await Advance(string.IsNullOrWhiteSpace(until) ? "all" : until);
     }
 
-    private async Task Advance(string run)
+    /// <summary>
+    /// Submit, take the step or steps, redraw. True when it went and the job
+    /// can go on; false when it stopped, failed, or finished.
+    /// </summary>
+    private async Task<bool> Advance(string run)
     {
         Document doc = Application.DocumentManager.MdiActiveDocument;
         Editor ed = doc.Editor;
@@ -785,9 +1093,9 @@ public class AutoDrawCommands
         if (!autodraw.Auth.IsLoggedIn)
         {
             ed.WriteMessage("\nPlease login first (ADLOGIN).");
-            return;
+            return false;
         }
-        if (!await EnsureProject(ed)) return;
+        if (!await EnsureProject(ed)) return false;
 
         int projectId = autodraw.AutoDraw.CurrentProjectId!.Value;
         string path = Path.Combine(Path.GetTempPath(), $"autodraw_submit_{Guid.NewGuid():N}.dxf");
@@ -800,7 +1108,7 @@ public class AutoDrawCommands
             using (DocumentLock docLock = doc.LockDocument())
             {
                 exported = DxfTransferService.ExportModelspace(
-                    db, path, new[] { AutoDrawVisualizer.InfoLayer, AutoDrawVisualizer.NotesLayer });
+                    db, path, AutoDrawVisualizer.DecorationLayers);
             }
             // A drawing that carries none of the server's entities while the
             // record holds geometry is not in step - submitting it would report
@@ -812,7 +1120,7 @@ public class AutoDrawCommands
             {
                 ed.WriteMessage($"\nThis drawing holds none of the server's {onRecord} entities.");
                 ed.WriteMessage("\nRun ADSTART to lay the job back in before continuing.");
-                return;
+                return false;
             }
 
             ed.WriteMessage($"\nSubmitting {exported} entities...");
@@ -827,7 +1135,7 @@ public class AutoDrawCommands
             if (!result.Success && result.Error == "needs_branch")
             {
                 branchName = AskForBranch(ed, result);
-                if (branchName == null) { ed.WriteMessage("\nCancelled."); return; }
+                if (branchName == null) { ed.WriteMessage("\nCancelled."); return false; }
                 result = await autodraw.AutoDraw.Continue(projectId, path, chosen, null, branchName, run);
                 autodraw.AutoDraw.NoteBranch(branchName);
             }
@@ -837,7 +1145,7 @@ public class AutoDrawCommands
             if (!result.Success && result.Error == "needs_input" && result.Inputs != null)
             {
                 var answers = AskFor(ed, result.Inputs);
-                if (answers == null) { ed.WriteMessage("\nCancelled."); return; }
+                if (answers == null) { ed.WriteMessage("\nCancelled."); return false; }
                 // The name goes with it. The submission already put this line on
                 // the new branch, so it would be inherited anyway - but relying
                 // on that silently drops the branch for any caller that answers
@@ -850,7 +1158,7 @@ public class AutoDrawCommands
             if (!result.Success)
             {
                 ed.WriteMessage($"\nStopped: {result.Message}");
-                return;
+                return false;
             }
 
             if (result.Ran != null && result.Ran.Count > 1)
@@ -891,8 +1199,11 @@ public class AutoDrawCommands
             // would otherwise linger in the drawing after leaving the record and
             // be submitted back as new geometry next time.
             int erased = 0, imported = 0;
+            Dictionary<string, string> before;
             using (DocumentLock docLock = doc.LockDocument())
             {
+                before = ChangeHighlightService.Snapshot(db);
+
                 using (Transaction tr = db.TransactionManager.StartTransaction())
                 {
                     erased = result.Resync
@@ -908,7 +1219,7 @@ public class AutoDrawCommands
                 {
                     // Cloning the server's entities in gave them new handles,
                     // so the groups it sent refer to nothing. Rebuild them.
-                    PieceGroupService.Rebuild(tr, db);
+                    RebuildDerived(tr, db, result.Data?.AutodrawRecord ?? autodraw.AutoDraw.CurrentProjectData?.AutodrawRecord);
 
                     AutoDrawVisualizer.EnsureInfoLayer(tr, db);
                     AutoDrawVisualizer.ClearInfoLayer(tr, db);
@@ -923,12 +1234,17 @@ public class AutoDrawCommands
                         result.Data?.AutodrawMeta ?? autodraw.AutoDraw.CurrentProjectData!.AutodrawMeta,
                         origin, autodraw.AutoDraw.CurrentBranch);
                     RedrawNotes(tr, db, btr, result.Notes);
+                    GridService.DrawLabels(tr, db, btr, result.Grid);
 
                     tr.Commit();
                 }
             }
 
+            await GridService.SyncSnapshots(doc, autodraw.AutoDraw.CurrentProjectId!.Value, result.Grid,
+                result.Data?.AutodrawRecord ?? autodraw.AutoDraw.CurrentProjectData?.AutodrawRecord,
+                autodraw.AutoDraw.CurrentProjectData?.AutodrawConfig);
             ed.Regen();
+            ChangeHighlightService.Show(doc, before);
             ed.WriteMessage($"\nErased {erased}, drew {imported}.");
 
             var meta = result.Data?.AutodrawMeta;
@@ -938,14 +1254,35 @@ public class AutoDrawCommands
                     ? "\nComplete."
                     : $"\nNow at step {meta.CurrentStep}, substep {meta.CurrentSubstep}.");
             }
+            return !(meta?.IsComplete ?? false);
         }
         catch (Exception ex)
         {
             ed.WriteMessage($"\nError: {ex.Message}");
+            return false;
         }
         finally
         {
             try { File.Delete(path); } catch (IOException) { }
         }
+}
+    /// <summary>
+    /// The derived things a redraw has to rebuild: the groups that let a
+    /// designer take hold of a whole piece, and the halos that show how near
+    /// two of them may come.
+    ///
+    /// Order matters - the halos are added to the groups, so the groups have
+    /// to exist first.
+    /// </summary>
+    private static void RebuildDerived(Transaction tr, Database db, AutoDrawRecordDTO record)
+    {
+        // Cloning the server's entities in gave them new handles, so the
+        // groups it sent refer to nothing.
+        PieceGroupService.Rebuild(tr, db);
+
+        // Half the gap the server says two pieces need, drawn around each. A
+        // guide only: the server measures the real outlines and refuses a nest
+        // that is too tight, and it never sees these.
+        ClearanceHaloService.Rebuild(tr, db, AutoDrawService.ClearanceFrom(record));
     }
 }

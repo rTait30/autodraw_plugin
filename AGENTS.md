@@ -48,6 +48,7 @@ longer exist. Trust this section instead.
 | `Services/DxfTransferService.cs` | Erase, export, import. The mechanics of the redraw. |
 | `Services/AutoDrawVisualizer.cs` | The INFO status board and the NOTES panel. |
 | `Services/PieceGroupService.cs` | One group per drawn piece, rebuilt after every redraw. |
+| `Services/ClearanceHaloService.cs` | The guide a designer nests against: half the server's gap, drawn round each piece. |
 | `Models/*.cs` | DTOs, mirroring the server's JSON. No logic. |
 
 ## The commands
@@ -87,9 +88,15 @@ There are two erases and the difference matters:
   `Resync` - all cases where the record is authoritative and the server is
   sending the full scope back, MPanel's geometry included.
 
-INFO and NOTES are decoration. They are excluded from the submission and from
-the ordinary erase, and rebuilt from scratch every cycle so they always describe
-the state now loaded.
+INFO, NOTES and PANEL_TOLERANCE are decoration. They are excluded from the
+submission and from the ordinary erase, and rebuilt from scratch every cycle so
+they always describe the state now loaded.
+
+They are named once, in `AutoDrawVisualizer.DecorationLayers`, and that list is
+what every call site passes. It used to be written out at five of them, and the
+cost of that was never the repetition - it is that adding a sixth layer and
+missing one site submits decoration to the server, which adopts it as geometry
+nobody can redraw.
 
 ## XDATA: how an entity says what it is
 
@@ -160,6 +167,53 @@ labels.
 
 Because `object` is the machinery's idea rather than a product's, this is the
 same loop for every product and every step. Do not teach it what a panel is.
+
+## The clearance halo
+
+Two pieces need a gap between them or a knife has nowhere to go. The server
+measures the real outlines and refuses a nest that is too tight; this side
+draws the guide, so a designer nesting by eye has something to keep apart
+rather than a number to estimate.
+
+`ClearanceHaloService.Rebuild` runs at the same five sites, straight after the
+groups - `RebuildDerived` does both, in that order, because the halos are added
+to the groups and the groups have to exist first. Then dragging a piece drags
+what the designer is keeping clear of.
+
+**They appear only once there is nesting to do, and that needs no rule here.**
+Nothing is drawn until some step has published `clearanceMm`, which on a sail
+is the step that draws the fabric - the one immediately after the pieces are
+laid apart. Going back before it takes the figure off the record again and the
+halos go with it. Gating on the fact rather than on a named substep is what
+keeps this from having to know a product's pipeline.
+
+- **Half the gap around each piece**, so two halos meeting is exactly the gap.
+  Symmetric, so nobody has to remember which of two pieces owns the space.
+- **The figure comes from the server.** `AutoDrawService.ClearanceFrom` looks
+  for `clearanceMm` anywhere in any substep's published facts. That is the
+  whole contract: a product that publishes it gets a guide at half of it, one
+  that does not gets none. Nothing here learns what a panel is or which step
+  draws the fabric. **Do not put the halved figure in this repo** - then there
+  are two owners and they drift.
+- **It is a guide and never a verdict.** These are on PANEL_TOLERANCE, red
+  and non-plotting and on their own layer so it can be turned off once the
+  nesting is done. It is excluded from every submission, so the server never
+  sees it. A halo that is
+  stale, deleted or a hair off at a corner cannot produce a wrong answer, only
+  a wrong-looking drawing.
+- **No AUTODRAW XDATA on them.** That stamp means "the server drew this and can
+  redraw it". Keeping it off also keeps them out of `CountStamped`, which
+  counts the server's entities to tell whether the drawing is in step with the
+  record - a halo counted there looks like drift and stops the next step.
+- **The outline is the closed curve in the piece**, found on that and not on
+  what the server calls it. True of a panel and of a doubler alike, and it
+  keeps the rule above about not reading roles.
+- **Which way is outwards is not knowable here.** A piece the server mirrored
+  comes back wound the other way, so a sign chosen once would shrink every
+  piece on half of all jobs and put the halos inside the fabric. Both offsets
+  are taken and the larger kept, which cannot be got backwards.
+- **A failed offset draws nothing, quietly.** A guide is not worth stopping a
+  job for; the server's check is the verdict either way.
 
 ## Building, and the NETLOAD lock
 

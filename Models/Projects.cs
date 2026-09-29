@@ -47,6 +47,10 @@ public class ProjectDetailsDTO
     public string? Dxf { get; set; }
 
     /// <summary>The loaded lineage's notes, for the NOTES layer.</summary>
+    /// <summary>Where the drawing was laid out on the page, when a layout was asked for.</summary>
+    [JsonProperty("grid")]
+    public autodraw_plugin.Models.AutoDraw.GridDTO? Grid { get; set; }
+
     [JsonProperty("notes")]
     public List<NoteDTO>? Notes { get; set; }
 

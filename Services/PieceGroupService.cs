@@ -92,6 +92,9 @@ public static class PieceGroupService
     /// <summary>
     /// The piece an entity belongs to, or null for one belonging to none.
     ///
+    /// Shared with the halo service, which buckets modelspace the same way so
+    /// that one reading of the stamp serves both.
+    ///
     /// XDATA carries a pair to a string: `name=text` where the value is a
     /// string, `name:=json` where it is anything else. The marker is required
     /// rather than inferred, because a panel id really is the string "P1" and
@@ -103,7 +106,7 @@ public static class PieceGroupService
     /// some that it does own has no `object` on purpose - the fabric roll and
     /// its margins, which must not move when a panel is dragged.
     /// </summary>
-    private static string PieceOf(Entity ent)
+    internal static string PieceOf(Entity ent)
     {
         using (ResultBuffer rb = ent.GetXDataForApplication(DxfTransferService.OwnedAppId))
         {

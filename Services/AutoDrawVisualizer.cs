@@ -30,6 +30,29 @@ public static class AutoDrawVisualizer
     public const string NotesLayer = "NOTES";
 
     /// <summary>
+    /// Where the tolerance halo is drawn: the guide a designer nests against,
+    /// half the server's stated gap around each piece, so two halos meeting is
+    /// exactly that gap. Red, and its own layer, so it can be turned off when
+    /// the nesting is done and it is only in the way.
+    /// </summary>
+    public const string ToleranceLayer = "PANEL_TOLERANCE";
+
+    /// <summary>Red, which is what the halo is drawn in.</summary>
+    public const short ToleranceColor = 1;
+
+    /// <summary>
+    /// Every layer this plugin draws on itself. None of it is the server's, so
+    /// none of it is submitted and none of it survives a full resync.
+    ///
+    /// Named once rather than listed at each call site. It was written out five
+    /// times, and the cost of that is not the repetition - it is that adding a
+    /// sixth layer and missing one site submits decoration to the server, which
+    /// adopts it as geometry nobody can redraw.
+    /// </summary>
+    public static readonly string[] DecorationLayers =
+        { InfoLayer, NotesLayer, ToleranceLayer, GridService.LabelLayer, GridService.HistoryLayer };
+
+    /// <summary>
     /// The board sits at a fixed spot rather than tracking the drawing's edge,
     /// so it stays where the designer last looked for it instead of moving
     /// every time the geometry grows.
@@ -37,17 +60,25 @@ public static class AutoDrawVisualizer
     private static readonly Point3d BoardPosition = new Point3d(-30000, 0, 0);
 
     /// <summary>
-    /// Notes sit opposite the board, on the far side of the model. Fixed for
-    /// the same reason the board is: it stays where it was last read.
+    /// Notes sit beyond the board, to the left of the grid the job is laid
+    /// out on - which runs right and down from the origin, so anything to the
+    /// right of it would sit in a cell. Fixed for the same reason the board is:
+    /// it stays where it was last read.
     /// </summary>
-    private static readonly Point3d NotesPosition = new Point3d(30000, 0, 0);
+    private static readonly Point3d NotesPosition = new Point3d(-70000, 0, 0);
 
 
     /// <summary>Create the INFO layer if it is missing. Non-plotting: it is not part of the job.</summary>
     public static void EnsureInfoLayer(Transaction tr, Database db) => EnsureLayer(tr, db, InfoLayer);
 
-    /// <summary>A non-plotting layer for the plugin's own annotation.</summary>
-    public static void EnsureLayer(Transaction tr, Database db, string name)
+    /// <summary>
+    /// A non-plotting layer for the plugin's own annotation.
+    ///
+    /// A colour is set only when the layer is made. One that is already there
+    /// keeps whatever it was given, so a designer who recoloured it does not
+    /// find it red again after the next redraw.
+    /// </summary>
+    public static void EnsureLayer(Transaction tr, Database db, string name, short? colorIndex = null)
     {
         LayerTable lt = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
         if (lt.Has(name)) return;
@@ -58,6 +89,11 @@ public static class AutoDrawVisualizer
             Name = name,
             IsPlottable = false,
         };
+        if (colorIndex != null)
+        {
+            layer.Color = Autodesk.AutoCAD.Colors.Color.FromColorIndex(
+                Autodesk.AutoCAD.Colors.ColorMethod.ByAci, colorIndex.Value);
+        }
         lt.Add(layer);
         tr.AddNewlyCreatedDBObject(layer, true);
     }

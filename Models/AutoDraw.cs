@@ -197,6 +197,62 @@ public class ContinueResponseDTO
     /// <summary>The loaded lineage's notes, to lay out on the NOTES layer.</summary>
     [JsonProperty("notes")]
     public List<NoteDTO>? Notes { get; set; }
+
+    /// <summary>Where the drawing was laid out on the page, when a layout was asked for.</summary>
+    [JsonProperty("grid")]
+    public GridDTO? Grid { get; set; }
+}
+
+/// <summary>
+/// Where the server laid the state out: which column of the grid, the labels
+/// for its cells, and the part of the page it occupies. The placing itself is
+/// already done in the drawing; this is what to draw and look at around it.
+/// </summary>
+public class GridDTO
+{
+    [JsonProperty("mode")]
+    public string Mode { get; set; }
+
+    [JsonProperty("direction")]
+    public string Direction { get; set; }
+
+    [JsonProperty("cell")]
+    public double Cell { get; set; }
+
+    [JsonProperty("column")]
+    public int Column { get; set; }
+
+    [JsonProperty("labels")]
+    public List<GridLabelDTO> Labels { get; set; } = new();
+
+    /// <summary>x0, y0, x1, y1 of the cells this state occupies.</summary>
+    [JsonProperty("focus")]
+    public List<double> Focus { get; set; } = new();
+}
+
+public class GridLabelDTO
+{
+    [JsonProperty("text")]
+    public string Text { get; set; }
+
+    [JsonProperty("at")]
+    public List<double> At { get; set; } = new();
+
+    [JsonProperty("height")]
+    public double Height { get; set; }
+}
+
+/// <summary>One earlier state, laid out in its own column.</summary>
+public class DrawingAtDTO
+{
+    [JsonProperty("success")]
+    public bool Success { get; set; }
+
+    [JsonProperty("message")]
+    public string? Message { get; set; }
+
+    [JsonProperty("drawing")]
+    public string? Dxf { get; set; }
 }
 
 /// <summary>A value a step asked for before it can run.</summary>
@@ -236,6 +292,10 @@ public class ContinueDataDTO
     /// <summary>The line of work now loaded, where the server reports one.</summary>
     [JsonProperty("branch")]
     public string? Branch { get; set; }
+
+    /// <summary>With ADFORWARD: the substep just redone, as step.substep.</summary>
+    [JsonProperty("redone")]
+    public string? Redone { get; set; }
 
     /// <summary>Which substep a note was filed against.</summary>
     [JsonProperty("target")]
