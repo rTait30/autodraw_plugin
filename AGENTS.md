@@ -42,13 +42,15 @@ longer exist. Trust this section instead.
 | `autodraw.cs` | `IExtensionApplication`. Builds the two global statics, `autodraw.Auth` and `autodraw.AutoDraw`, on load. |
 | `Commands/AuthCommands.cs` | `ADLOGIN`, `ADLOGOUT`, `ADWHOAMI`. |
 | `Commands/AutoDrawCommands.cs` | Everything else. The whole designer-facing CLI. |
-| `Services/ApiService.cs` | HTTP. Bearer token on every request; `BaseUrl` defaults to `http://localhost:5001/api`. |
-| `Services/AuthService.cs` | Login, token, role. |
+| `Services/ApiService.cs` | HTTP. Bearer token on every request, refreshed first when it has lapsed and retried once on a 401; `BaseUrl` defaults to `http://localhost:5001/api`. |
+| `Services/AuthService.cs` | Login, token, role. A 10-minute access token in memory; the refresh token is the login, spent for a new one on every refresh (server: `api/auth/tokens.py`). |
+| `Services/TokenStore.cs` | The refresh token between AutoCAD runs, DPAPI-encrypted in `%LOCALAPPDATA%/autodraw/session.bin`. |
 | `Services/AutoDrawService.cs` | One method per automation endpoint, plus the session's project and branch. |
 | `Services/DxfTransferService.cs` | Erase, export, import. The mechanics of the redraw. |
 | `Services/AutoDrawVisualizer.cs` | The INFO status board and the NOTES panel. |
 | `Services/PieceGroupService.cs` | One group per drawn piece, rebuilt after every redraw. |
 | `Services/ClearanceHaloService.cs` | The guide a designer nests against: half the server's gap, drawn round each piece. |
+| `Services/DrawingCache.cs` | Every full-scope state the server sends, on disk under `%LOCALAPPDATA%\autodraw\cache\<project>\`, keyed by artifact + layout + direction; and the earlier-state pictures. Auto `ADFORWARD` plays the states ahead from it and catches the record up with one `forward` at the end. Never evicted: a state never changes. |
 | `Models/*.cs` | DTOs, mirroring the server's JSON. No logic. |
 
 ## The commands

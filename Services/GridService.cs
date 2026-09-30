@@ -43,6 +43,34 @@ public static class GridService
         Last = grid;
         if (grid?.Labels == null) return;
 
+        // The outline of every cell the state in hand occupies, and the top of
+        // the band under them: new work is taken as belonging to the cell it is
+        // drawn in, and anything outside them all is refused, so where they
+        // are wants to be seen rather than guessed.
+        string lines = PluginSettings.Current.Gridlines;
+        List<List<double>> outlined = lines == "Off" ? new List<List<double>>()
+            : lines == "Live" ? grid.Cells : grid.EveryCell;
+        foreach (List<double> cell in outlined ?? new List<List<double>>())
+        {
+            if (cell == null || cell.Count < 4) continue;
+            Polyline outline = new Polyline { Layer = LabelLayer, Closed = true };
+            outline.AddVertexAt(0, new Point2d(cell[0], cell[1]), 0, 0, 0);
+            outline.AddVertexAt(1, new Point2d(cell[2], cell[1]), 0, 0, 0);
+            outline.AddVertexAt(2, new Point2d(cell[2], cell[3]), 0, 0, 0);
+            outline.AddVertexAt(3, new Point2d(cell[0], cell[3]), 0, 0, 0);
+            btr.AppendEntity(outline);
+            tr.AddNewlyCreatedDBObject(outline, true);
+        }
+        if (grid.Width > 0 && lines != "Off")
+        {
+            Line band = new Line(new Point3d(0, grid.BandTop, 0), new Point3d(grid.Width, grid.BandTop, 0))
+            {
+                Layer = LabelLayer,
+            };
+            btr.AppendEntity(band);
+            tr.AddNewlyCreatedDBObject(band, true);
+        }
+
         foreach (GridLabelDTO label in grid.Labels)
         {
             if (label.At == null || label.At.Count < 2) continue;
@@ -81,22 +109,21 @@ public static class GridService
 
         if (grid != null && grid.Mode == "stack" && record?.Steps != null && config?.Steps != null)
         {
-            int column = 0;
-            foreach (ConfigStepDTO step in config.Steps)
+            // The server's columns, not the config's substeps: a project step
+            // has no column, so counting every substep would put every picture
+            // after the first project step one column out.
+            for (int here = 0; here < grid.Columns.Count && here < grid.Column; here++)
             {
-                foreach (ConfigSubstepDTO substep in step.Substeps)
-                {
-                    int here = column++;
-                    if (here >= grid.Column) continue;
-                    if (!record.Steps.TryGetValue(step.Key, out AutoDrawStepStatusDTO? done)) continue;
-                    if (done?.Substeps == null
-                        || !done.Substeps.TryGetValue(substep.Key, out AutoDrawSubstepStatusDTO? state)
-                        || state?.ArtifactId == null) continue;
+                List<string> where = grid.Columns[here];
+                if (where == null || where.Count < 2) continue;
+                if (!record.Steps.TryGetValue(where[0], out AutoDrawStepStatusDTO? done)) continue;
+                if (done?.Substeps == null
+                    || !done.Substeps.TryGetValue(where[1], out AutoDrawSubstepStatusDTO? state)
+                    || state?.ArtifactId == null) continue;
 
-                    string name = SnapshotPrefix + state.ArtifactId + "_" + grid.Direction;
-                    wanted.Add(name);
-                    if (!HasBlock(db, name)) toFetch.Add((name, state.ArtifactId.Value));
-                }
+                string name = SnapshotPrefix + state.ArtifactId + "_" + grid.Direction;
+                wanted.Add(name);
+                if (!HasBlock(db, name)) toFetch.Add((name, state.ArtifactId.Value));
             }
         }
 

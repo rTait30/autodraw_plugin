@@ -228,6 +228,30 @@ public class GridDTO
     /// <summary>x0, y0, x1, y1 of the cells this state occupies.</summary>
     [JsonProperty("focus")]
     public List<double> Focus { get; set; } = new();
+
+    /// <summary>Each cell of this state as x0, y0, x1, y1: where new work may be drawn.</summary>
+    [JsonProperty("cells")]
+    public List<List<double>> Cells { get; set; } = new();
+
+    /// <summary>Every cell of the grid, each item at each of its substeps.</summary>
+    [JsonProperty("every_cell")]
+    public List<List<double>> EveryCell { get; set; } = new();
+
+    /// <summary>The grid's columns in order, as step and substep keys. Item substeps only.</summary>
+    [JsonProperty("columns")]
+    public List<List<string>> Columns { get; set; } = new();
+
+    /// <summary>A project step is in hand: its work is in the band, not the grid.</summary>
+    [JsonProperty("project")]
+    public bool Project { get; set; }
+
+    /// <summary>Where the project's band begins, under the whole grid.</summary>
+    [JsonProperty("band_top")]
+    public double BandTop { get; set; }
+
+    /// <summary>How far the grid, and the band under it, runs across.</summary>
+    [JsonProperty("width")]
+    public double Width { get; set; }
 }
 
 public class GridLabelDTO

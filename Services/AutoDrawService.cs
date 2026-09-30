@@ -37,13 +37,34 @@ namespace autodraw_plugin.Services
         /// </summary>
         public AutoDrawMetaDTO? CurrentMeta { get; private set; }
 
-        /// <summary>Keep the position a reply reports, if it reports one.</summary>
+        /// <summary>
+        /// The record as the server last reported it: which state each
+        /// completed substep on this line produced. What the cache is asked
+        /// about to find the states ahead.
+        /// </summary>
+        public AutoDrawRecordDTO? CurrentRecord { get; private set; }
+
+        /// <summary>
+        /// Keep the position a reply reports, if it reports one, and the state
+        /// it carries in the cache.
+        /// </summary>
         private ContinueResponseDTO Remember(ContinueResponseDTO result)
         {
             // A reply that carries no position still deserialises one, all
             // zeros; only a real one says it was initialised.
             AutoDrawMetaDTO? meta = result?.Data?.AutodrawMeta;
-            if (meta != null && meta.Initialised) CurrentMeta = meta;
+            if (meta != null && meta.Initialised)
+            {
+                CurrentMeta = meta;
+                CurrentRecord = result.Data.AutodrawRecord;
+            }
+
+            if (result?.Success == true && CurrentProjectId.HasValue)
+            {
+                DrawingCache.Keep(CurrentProjectId.Value, result.Dxf, result.DxfScope, result.Grid,
+                    result.Data?.AutodrawMeta, result.Data?.AutodrawRecord, result.Notes,
+                    result.Data?.Branch ?? result.SubmittedArtifact?.Branch ?? CurrentBranch);
+            }
             return result;
         }
 
@@ -67,7 +88,15 @@ namespace autodraw_plugin.Services
             // The new structure is a direct object, no "data" wrapper
             CurrentProjectData = JsonConvert.DeserializeObject<ProjectDetailsDTO>(json);
             CurrentMeta = CurrentProjectData?.AutodrawMeta;
+            CurrentRecord = CurrentProjectData?.AutodrawRecord;
             NoteBranch(CurrentProjectData?.CurrentArtifact?.Branch);
+
+            ProjectDetailsDTO? data = CurrentProjectData;
+            if (data != null)
+            {
+                DrawingCache.Keep(projectId, data.Dxf, data.DxfScope ?? scope, data.Grid,
+                    data.AutodrawMeta, data.AutodrawRecord, data.Notes, data.CurrentArtifact?.Branch);
+            }
         }
 
         /// <summary>
@@ -195,23 +224,33 @@ namespace autodraw_plugin.Services
         /// <summary>
         /// One earlier state of the job, laid out in its own column. Read-only:
         /// the job does not move. A state never changes once made, so what
-        /// comes back can be kept for as long as the drawing is open.
+        /// comes back is kept on disk and never asked for twice.
         /// </summary>
         public async Task<DrawingAtDTO?> DrawingAt(int projectId, int artifactId)
         {
+            string layout = Laid("layout"), direction = Laid("direction");
+            string? kept = DrawingCache.FindSnapshot(projectId, artifactId, layout, direction);
+            if (kept != null) return new DrawingAtDTO { Success = true, Dxf = kept };
+
             HttpResponseMessage response = await ApiService.Get(
                 $"/automation/drawing/{projectId}/{artifactId}"
-                + $"?layout={Laid("layout")}&direction={Laid("direction")}");
+                + $"?layout={layout}&direction={direction}");
             string body = await response.Content.ReadAsStringAsync();
             try
             {
-                return JsonConvert.DeserializeObject<DrawingAtDTO>(body);
+                DrawingAtDTO? drawing = JsonConvert.DeserializeObject<DrawingAtDTO>(body);
+                if (drawing?.Success == true && !string.IsNullOrEmpty(drawing.Dxf))
+                    DrawingCache.KeepSnapshot(projectId, artifactId, layout, direction, drawing.Dxf);
+                return drawing;
             }
             catch (JsonException)
             {
                 return null;
             }
         }
+
+        /// <summary>The layout and direction every drawing is asked for in, as the cache keys them.</summary>
+        public static (string layout, string direction) Layout => (Laid("layout"), Laid("direction"));
 
         /// <summary>
         /// Turn a response into a DTO, and make sure a failure always says

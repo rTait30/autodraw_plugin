@@ -35,6 +35,12 @@ public class PluginSettings
     /// <summary>Which way the substeps run when stacked: "Right" or "Down".</summary>
     public string Direction { get; set; } = "Right";
 
+    /// <summary>
+    /// Which cells of the grid are outlined: "All" of them, only those of the
+    /// "Live" state, or "Off".
+    /// </summary>
+    public string Gridlines { get; set; } = "All";
+
     private static readonly string FilePath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "autodraw", "settings.json");

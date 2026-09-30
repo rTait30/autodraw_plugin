@@ -28,6 +28,7 @@ public class autodraw : IExtensionApplication
         ed.WriteMessage($"\n> autodraw plugin loaded successfully.");
         // 1. Initialize Services
         Auth = new AuthService();
+        Auth.Restore();
         AutoDraw = new AutoDrawService();
     }
 

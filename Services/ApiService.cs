@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
@@ -20,32 +21,50 @@ public static class ApiService
         $"{BaseUrl.TrimEnd('/')}/{endpoint.TrimStart('/')}";
 
     /// <summary>
-    /// Every automation route is behind role_required, so the bearer token has
-    /// to travel with the request or the server answers 401.
+    /// One request carrying exactly the bearer token given, or none. AuthService
+    /// uses this for login, refresh and logout, which bring their own.
     /// </summary>
-    private static HttpRequestMessage Build(HttpMethod method, string endpoint, HttpContent? content = null)
+    internal static Task<HttpResponseMessage> SendAs(HttpMethod method, string endpoint, HttpContent? content, string? bearer)
     {
         var request = new HttpRequestMessage(method, Url(endpoint));
         if (content != null) request.Content = content;
-
-        string token = autodraw.Auth?.AuthToken;
-        if (!string.IsNullOrEmpty(token))
+        if (!string.IsNullOrEmpty(bearer))
         {
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
         }
-        return request;
+        return client.SendAsync(request);
+    }
+
+    /// <summary>
+    /// Every automation route is behind role_required, so the access token has
+    /// to travel with the request or the server answers 401. A lapsed token is
+    /// refreshed first; a 401 anyway gets one refresh and one retry.
+    /// </summary>
+    private static async Task<HttpResponseMessage> Send(HttpMethod method, string endpoint, HttpContent? content = null)
+    {
+        AuthService auth = autodraw.Auth;
+        await auth.EnsureFresh();
+
+        string token = auth.AuthToken;
+        HttpResponseMessage response = await SendAs(method, endpoint, content, token);
+        if (response.StatusCode == HttpStatusCode.Unauthorized && await auth.Refresh(token))
+        {
+            response.Dispose();
+            response = await SendAs(method, endpoint, content, auth.AuthToken);
+        }
+        return response;
     }
 
     public static async Task<HttpResponseMessage> Get(string endpoint)
     {
-        HttpResponseMessage response = await client.SendAsync(Build(HttpMethod.Get, endpoint));
+        HttpResponseMessage response = await Send(HttpMethod.Get, endpoint);
         response.EnsureSuccessStatusCode();
         return response;
     }
 
     public static async Task<HttpResponseMessage> Post(string endpoint, HttpContent content)
     {
-        HttpResponseMessage response = await client.SendAsync(Build(HttpMethod.Post, endpoint, content));
+        HttpResponseMessage response = await Send(HttpMethod.Post, endpoint, content);
         response.EnsureSuccessStatusCode();
         return response;
     }
@@ -61,7 +80,7 @@ public static class ApiService
                 if (!string.IsNullOrEmpty(pair.Value)) form.Add(new StringContent(pair.Value), pair.Key);
             }
         }
-        return await client.SendAsync(Build(HttpMethod.Post, endpoint, form));
+        return await Send(HttpMethod.Post, endpoint, form);
     }
 
     /// <summary>
@@ -87,7 +106,7 @@ public static class ApiService
             }
         }
 
-        return await client.SendAsync(Build(HttpMethod.Post, endpoint, form));
+        return await Send(HttpMethod.Post, endpoint, form);
     }
 }
 }

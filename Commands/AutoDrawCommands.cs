@@ -742,6 +742,23 @@ public class AutoDrawCommands
             return;
         }
 
+        // Played from the cache where it knows the way, up to the target when
+        // there is one. Where it does not - nothing kept, a fork it cannot
+        // settle, a target off the line it knows - each state is asked for, as
+        // it always was, and kept as it comes.
+        var ahead = DrawingCache.Ahead(projectId, autodraw.AutoDraw.CurrentRecord,
+            autodraw.AutoDraw.CurrentBranch, autodraw.AutoDraw.CurrentProjectData?.AutodrawConfig);
+        if (toSubstep != null)
+        {
+            int at = ahead.FindIndex(a => string.Equals(a.key, toSubstep, StringComparison.OrdinalIgnoreCase));
+            ahead = at < 0 ? new List<(string key, int artifact)>() : ahead.Take(at + 1).ToList();
+        }
+        if (ahead.Count > 0)
+        {
+            await PlayFromCache(doc, projectId, ahead);
+            return;
+        }
+
         await Play(doc, async first =>
         {
             ContinueResponseDTO result = await ForwardOnce(doc, projectId, null);
@@ -760,7 +777,6 @@ public class AutoDrawCommands
     private static async Task<ContinueResponseDTO> ForwardOnce(Document doc, int projectId, string toSubstep)
     {
         Editor ed = doc.Editor;
-        Database db = doc.Database;
 
         try
         {
@@ -779,66 +795,192 @@ public class AutoDrawCommands
 
             // The step is not run again - the server restores a drawing it made
             // before - so this is the same full resync reverting does.
-            int erased = 0, imported = 0;
-            Dictionary<string, string> before;
-            using (DocumentLock docLock = doc.LockDocument())
-            {
-                before = ChangeHighlightService.Snapshot(db);
-
-                using (Transaction tr = db.TransactionManager.StartTransaction())
-                {
-                    erased = DxfTransferService.EraseAllExcept(
-                        tr, db, AutoDrawVisualizer.DecorationLayers);
-                    tr.Commit();
-                }
-
-                imported = DxfTransferService.ImportBase64(db, result.Dxf);
-
-                using (Transaction tr = db.TransactionManager.StartTransaction())
-                {
-                    // Cloning the server's entities in gave them new handles,
-                    // so the groups it sent refer to nothing. Rebuild them.
-                    RebuildDerived(tr, db, result.Data?.AutodrawRecord ?? autodraw.AutoDraw.CurrentProjectData?.AutodrawRecord);
-
-                    AutoDrawVisualizer.EnsureInfoLayer(tr, db);
-                    AutoDrawVisualizer.ClearInfoLayer(tr, db);
-
-                    BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
-                    BlockTableRecord btr = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
-
-                    Point3d origin = AutoDrawVisualizer.BoardOrigin(tr, db);
-                    AutoDrawVisualizer.DrawStatusBoard(
-                        tr, btr,
-                        autodraw.AutoDraw.CurrentProjectData!.AutodrawConfig,
-                        result.Data?.AutodrawMeta ?? autodraw.AutoDraw.CurrentProjectData!.AutodrawMeta,
-                        origin, autodraw.AutoDraw.CurrentBranch);
-                    RedrawNotes(tr, db, btr, result.Notes);
-                    GridService.DrawLabels(tr, db, btr, result.Grid);
-
-                    tr.Commit();
-                }
-            }
-
-            await GridService.SyncSnapshots(doc, autodraw.AutoDraw.CurrentProjectId!.Value, result.Grid,
+            var (erased, imported) = await Resync(doc, result.Dxf,
                 result.Data?.AutodrawRecord ?? autodraw.AutoDraw.CurrentProjectData?.AutodrawRecord,
-                autodraw.AutoDraw.CurrentProjectData?.AutodrawConfig);
-            ed.Regen();
-            ChangeHighlightService.Show(doc, before);
+                result.Data?.AutodrawMeta ?? autodraw.AutoDraw.CurrentProjectData!.AutodrawMeta,
+                result.Notes, result.Grid);
             ed.WriteMessage($"\nWiped {erased}, redrew {imported}.");
-
-            var meta = result.Data?.AutodrawMeta;
-            if (meta != null)
-            {
-                ed.WriteMessage(meta.IsComplete
-                    ? "\nComplete."
-                    : $"\nForward at step {meta.CurrentStep}, substep {meta.CurrentSubstep}.");
-            }
+            ReportForward(ed, result.Data?.AutodrawMeta);
             return result;
         }
         catch (Exception ex)
         {
             ed.WriteMessage($"\nError: {ex.Message}");
             return null;
+        }
+    }
+
+    private static void ReportForward(Editor ed, AutoDrawMetaDTO meta)
+    {
+        if (meta == null) return;
+        ed.WriteMessage(meta.IsComplete
+            ? "\nComplete."
+            : $"\nForward at step {meta.CurrentStep}, substep {meta.CurrentSubstep}.");
+    }
+
+    /// <summary>
+    /// Replace the drawing with one whole state and rebuild everything drawn
+    /// around it - the same full resync whether the state came from the
+    /// server just now or from the cache.
+    /// </summary>
+    private static async Task<(int erased, int imported)> Resync(
+        Document doc, string dxf, AutoDrawRecordDTO record, AutoDrawMetaDTO meta,
+        List<NoteDTO> notes, GridDTO grid)
+    {
+        Editor ed = doc.Editor;
+        Database db = doc.Database;
+        int erased = 0, imported = 0;
+        Dictionary<string, string> before;
+        using (DocumentLock docLock = doc.LockDocument())
+        {
+            before = ChangeHighlightService.Snapshot(db);
+
+            using (Transaction tr = db.TransactionManager.StartTransaction())
+            {
+                erased = DxfTransferService.EraseAllExcept(
+                    tr, db, AutoDrawVisualizer.DecorationLayers);
+                tr.Commit();
+            }
+
+            imported = DxfTransferService.ImportBase64(db, dxf);
+
+            using (Transaction tr = db.TransactionManager.StartTransaction())
+            {
+                // Cloning the server's entities in gave them new handles,
+                // so the groups it sent refer to nothing. Rebuild them.
+                RebuildDerived(tr, db, record);
+
+                AutoDrawVisualizer.EnsureInfoLayer(tr, db);
+                AutoDrawVisualizer.ClearInfoLayer(tr, db);
+
+                BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                BlockTableRecord btr = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
+
+                Point3d origin = AutoDrawVisualizer.BoardOrigin(tr, db);
+                AutoDrawVisualizer.DrawStatusBoard(
+                    tr, btr,
+                    autodraw.AutoDraw.CurrentProjectData!.AutodrawConfig,
+                    meta, origin, autodraw.AutoDraw.CurrentBranch);
+                RedrawNotes(tr, db, btr, notes);
+                GridService.DrawLabels(tr, db, btr, grid);
+
+                tr.Commit();
+            }
+        }
+
+        await GridService.SyncSnapshots(doc, autodraw.AutoDraw.CurrentProjectId!.Value, grid,
+            record, autodraw.AutoDraw.CurrentProjectData?.AutodrawConfig);
+        ed.Regen();
+        ChangeHighlightService.Show(doc, before);
+        return (erased, imported);
+    }
+
+    /// <summary>
+    /// Play the states ahead that the cache knows, a tick apart, each drawn
+    /// from disk. The server's record is left where it is while they play and
+    /// brought up in one call at the end - forward to the last state drawn,
+    /// along the branch being followed - so replaying a finished job is one
+    /// transfer rather than one per state.
+    ///
+    /// A state whose drawing is not kept in this layout is fetched by going
+    /// forward to it for real, which brings the record up to it too, and is
+    /// kept from then on.
+    /// </summary>
+    private static async Task PlayFromCache(Document doc, int projectId,
+                                            List<(string key, int artifact)> ahead)
+    {
+        Editor ed = doc.Editor;
+        var (layout, direction) = AutoDrawService.Layout;
+        var queue = new Queue<(string key, int artifact)>(ahead);
+
+        // The last state drawn from the cache, while the server has not been
+        // told of it.
+        (string key, int artifact)? drawnAhead = null;
+
+        await Play(doc, async first =>
+        {
+            var next = queue.Dequeue();
+            var kept = DrawingCache.Find(projectId, next.artifact, layout, direction);
+
+            if (kept == null)
+            {
+                ContinueResponseDTO result = await ForwardOnce(doc, projectId, next.key);
+                drawnAhead = null;
+                if (result == null || !result.Success) return false;
+                if (result.Data?.AutodrawRecord?.CurrentArtifactId != next.artifact)
+                {
+                    ed.WriteMessage("\nThe server's line leaves the cached one here - stopping.");
+                    return false;
+                }
+                return queue.Count > 0;
+            }
+
+            var (state, drawing) = kept.Value;
+            if (autodraw.AutoDraw.CurrentBranch == null) autodraw.AutoDraw.NoteBranch(state.Branch);
+            var (erased, imported) = await Resync(doc, drawing.Dxf, state.Record,
+                state.Meta ?? autodraw.AutoDraw.CurrentProjectData!.AutodrawMeta,
+                state.Notes, drawing.Grid);
+            drawnAhead = next;
+            ed.WriteMessage($"\n{next.key} from the cache: wiped {erased}, redrew {imported}.");
+            ReportForward(ed, state.Meta);
+            return queue.Count > 0;
+        });
+
+        if (drawnAhead != null) await CatchUp(doc, projectId, drawnAhead.Value);
+    }
+
+    /// <summary>
+    /// Bring the server's record up to the state last drawn from the cache.
+    ///
+    /// The cache is a guess about a record held elsewhere, so the server's
+    /// answer wins. Where it lands on the state drawn, only the notes are
+    /// redrawn - one may have been written since the state was kept. Where it
+    /// lands somewhere else, its reply replaces the drawing. Where it refuses,
+    /// the record has not moved, and the job is laid in again as it stands.
+    /// </summary>
+    private static async Task CatchUp(Document doc, int projectId, (string key, int artifact) drawn)
+    {
+        Editor ed = doc.Editor;
+        Database db = doc.Database;
+        try
+        {
+            ContinueResponseDTO result = await autodraw.AutoDraw.Forward(projectId, drawn.key);
+            if (!result.Success)
+            {
+                ed.WriteMessage($"\nThe server did not follow to {drawn.key}: {result.Message}");
+                ed.WriteMessage("\nLaying the job in as the server holds it.");
+                await LayIn(doc, projectId);
+                return;
+            }
+            if (autodraw.AutoDraw.CurrentBranch == null) autodraw.AutoDraw.NoteBranch(result.Data?.Branch);
+
+            if (result.Data?.AutodrawRecord?.CurrentArtifactId != drawn.artifact)
+            {
+                ed.WriteMessage($"\nThe server's {drawn.key} is not the cached one - redrawing from the server.");
+                var (erased, imported) = await Resync(doc, result.Dxf,
+                    result.Data?.AutodrawRecord ?? autodraw.AutoDraw.CurrentProjectData?.AutodrawRecord,
+                    result.Data?.AutodrawMeta ?? autodraw.AutoDraw.CurrentProjectData!.AutodrawMeta,
+                    result.Notes, result.Grid);
+                ed.WriteMessage($"\nWiped {erased}, redrew {imported}.");
+                ReportForward(ed, result.Data?.AutodrawMeta);
+                return;
+            }
+
+            using (DocumentLock docLock = doc.LockDocument())
+            using (Transaction tr = db.TransactionManager.StartTransaction())
+            {
+                BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                BlockTableRecord btr = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
+                RedrawNotes(tr, db, btr, result.Notes);
+                tr.Commit();
+            }
+            ed.Regen();
+            ed.WriteMessage($"\nRecord caught up at {drawn.key}.");
+        }
+        catch (Exception ex)
+        {
+            ed.WriteMessage($"\nError catching the record up: {ex.Message}");
+            ed.WriteMessage("\nThe drawing is ahead of the record - run ADSTART to lay the job back in.");
         }
     }
 
@@ -986,21 +1128,38 @@ public class AutoDrawCommands
         Document doc = Application.DocumentManager.MdiActiveDocument;
         Editor ed = doc.Editor;
         PluginSettings settings = PluginSettings.Current;
-        string laidOutAs = settings.Layout + "/" + settings.Direction;
+        string laidOutAs = settings.Layout + "/" + settings.Direction + "/" + settings.Gridlines;
 
         while (true)
         {
             PromptKeywordOptions options = new PromptKeywordOptions(
                 $"\nAuto {(settings.Auto ? "On" : "Off")}, tick {settings.TickSeconds:0.##}s, "
-                + $"{settings.Layout} {settings.Direction}. Change [Auto/Tick/Layout/Direction] <done>: ");
+                + $"{settings.Layout} {settings.Direction}, gridlines {settings.Gridlines}. "
+                + "Change [Auto/Tick/Layout/Direction/Gridlines] <done>: ");
             options.Keywords.Add("Auto");
             options.Keywords.Add("Tick");
             options.Keywords.Add("Layout");
             options.Keywords.Add("Direction");
+            options.Keywords.Add("Gridlines");
             options.AllowNone = true;
 
             PromptResult picked = ed.GetKeywords(options);
             if (picked.Status != PromptStatus.OK || string.IsNullOrEmpty(picked.StringResult)) break;
+
+            if (picked.StringResult == "Gridlines")
+            {
+                PromptKeywordOptions which = new PromptKeywordOptions(
+                    "\nOutline [All/Live/Off] the cells: every one, the state in hand's, or none: ");
+                which.Keywords.Add("All");
+                which.Keywords.Add("Live");
+                which.Keywords.Add("Off");
+                which.Keywords.Default = settings.Gridlines;
+                PromptResult said = ed.GetKeywords(which);
+                if (said.Status != PromptStatus.OK) continue;
+                settings.Gridlines = said.StringResult;
+                settings.Save();
+                continue;
+            }
 
             if (picked.StringResult == "Layout" || picked.StringResult == "Direction")
             {
@@ -1048,7 +1207,8 @@ public class AutoDrawCommands
 
         // The layout is the server's to apply, so a change is seen by asking for
         // the job again in it - the whole drawing, laid out afresh.
-        if (settings.Layout + "/" + settings.Direction != laidOutAs && autodraw.AutoDraw.HasActiveProject)
+        if (settings.Layout + "/" + settings.Direction + "/" + settings.Gridlines != laidOutAs
+            && autodraw.AutoDraw.HasActiveProject)
         {
             if (StopIfPlaying(ed)) return;
             await LayIn(doc, autodraw.AutoDraw.CurrentProjectId!.Value);
