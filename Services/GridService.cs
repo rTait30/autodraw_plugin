@@ -136,10 +136,12 @@ public static class GridService
             if (drawing?.Success == true && !string.IsNullOrEmpty(drawing.Dxf))
                 fetched.Add((name, drawing.Dxf));
         }
+        TempTiming.Lap($"c5 snapshots fetch ({toFetch.Count} of {wanted.Count})"); // TEMP TIMING
 
         using (doc.LockDocument())
         {
             foreach (var (name, dxf) in fetched) DefineBlock(db, name, dxf);
+            TempTiming.Lap($"c6 snapshots define ({fetched.Count})"); // TEMP TIMING
 
             using (Transaction tr = db.TransactionManager.StartTransaction())
             {
@@ -168,6 +170,7 @@ public static class GridService
                 tr.Commit();
             }
         }
+        TempTiming.Lap("c7 snapshots place"); // TEMP TIMING
     }
 
     /// <summary>Look at the cells the state in hand occupies, with a margin.</summary>

@@ -42,6 +42,8 @@ longer exist. Trust this section instead.
 | `autodraw.cs` | `IExtensionApplication`. Builds the two global statics, `autodraw.Auth` and `autodraw.AutoDraw`, on load. |
 | `Commands/AuthCommands.cs` | `ADLOGIN`, `ADLOGOUT`, `ADWHOAMI`. |
 | `Commands/AutoDrawCommands.cs` | Everything else. The whole designer-facing CLI. |
+| `Commands/OperationCommands.cs` | `ADOP` - a free operation on a selection, no project. |
+| `Services/OperationService.cs` | The server's free operations endpoint: catalogue, run, and exporting and erasing a selection. |
 | `Services/ApiService.cs` | HTTP. Bearer token on every request, refreshed first when it has lapsed and retried once on a 401; `BaseUrl` defaults to `http://localhost:5001/api`. |
 | `Services/AuthService.cs` | Login, token, role. A 10-minute access token in memory; the refresh token is the login, spent for a new one on every refresh (server: `api/auth/tokens.py`). |
 | `Services/TokenStore.cs` | The refresh token between AutoCAD runs, DPAPI-encrypted in `%LOCALAPPDATA%/autodraw/session.bin`. |
@@ -66,6 +68,7 @@ longer exist. Trust this section instead.
 | `ADFORWARD` | Redo, without running the step again - the server restores a drawing it already made. |
 | `ADBRANCH` | List the lines of work and load one's tip. |
 | `ADNOTE` | Attach a note to the state now loaded. |
+| `ADOP` | Run one of the server's operations on a selection (Enter for the whole drawing), answering what it asks with the prompt its type calls for. No project: nothing is loaded or recorded. Layout Replace erases exactly what was sent and lays the result in its place; Layout Stack keeps it and lays the result beside it, Right or Down. |
 
 ## The redraw contract
 

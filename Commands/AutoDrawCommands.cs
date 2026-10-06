@@ -106,6 +106,7 @@ public class AutoDrawCommands
 
              ed.WriteMessage($"\nFetching project {projectId}...");
 
+             TempTiming.Start(); // TEMP TIMING
              await autodraw.AutoDraw.StartProject(projectId);
 
              if (!autodraw.AutoDraw.HasActiveProject)
@@ -126,8 +127,10 @@ public class AutoDrawCommands
                  ed.WriteMessage("\nCancelled.");
                  return;
              }
+             TempTiming.Skip(); // TEMP TIMING
 
              var (erased, imported) = await LayInFetched(doc, data);
+             ed.WriteMessage(TempTiming.Report()); // TEMP TIMING
              ed.WriteMessage($"\nProject {data.ProjectId} - {data.ProjectName}");
              ed.WriteMessage($"\nErased {erased} server entities, drew {imported}.");
              ed.WriteMessage($"\nSubmitting layers: {string.Join(", ", data.Submission.Layers)}");
@@ -179,6 +182,7 @@ public class AutoDrawCommands
                     tr, db, AutoDrawVisualizer.DecorationLayers);
                 tr.Commit();
             }
+            TempTiming.Lap($"b  erase ({erased})"); // TEMP TIMING
 
             imported = DxfTransferService.ImportBase64(db, data.Dxf);
 
@@ -188,6 +192,7 @@ public class AutoDrawCommands
                 // Cloning the server's entities in gave them new handles,
                 // so the groups it sent refer to nothing. Rebuild them.
                 RebuildDerived(tr, db, data.AutodrawRecord);
+                TempTiming.Lap("c3 groups + halos"); // TEMP TIMING
 
                 AutoDrawVisualizer.EnsureInfoLayer(tr, db);
                 AutoDrawVisualizer.ClearInfoLayer(tr, db);
@@ -205,9 +210,11 @@ public class AutoDrawCommands
             }
         }
 
+        TempTiming.Lap("c4 board, notes, grid labels"); // TEMP TIMING
         await GridService.SyncSnapshots(doc, data.ProjectId, data.Grid,
             data.AutodrawRecord, data.AutodrawConfig);
         ed.Regen();
+        TempTiming.Lap("c8 regen"); // TEMP TIMING
         return (erased, imported);
     }
 

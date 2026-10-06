@@ -83,10 +83,13 @@ namespace autodraw_plugin.Services
             string endpoint = $"/automation/start/{projectId}?drawing_scope={scope}"
                               + $"&layout={Laid("layout")}&direction={Laid("direction")}";
             HttpResponseMessage response = await ApiService.Get(endpoint);
+            TempTiming.Lap("a1 server request"); // TEMP TIMING
             string json = await response.Content.ReadAsStringAsync();
+            TempTiming.Lap($"a2 read body ({json.Length / 1024} KB)"); // TEMP TIMING
 
             // The new structure is a direct object, no "data" wrapper
             CurrentProjectData = JsonConvert.DeserializeObject<ProjectDetailsDTO>(json);
+            TempTiming.Lap("a3 deserialise"); // TEMP TIMING
             CurrentMeta = CurrentProjectData?.AutodrawMeta;
             CurrentRecord = CurrentProjectData?.AutodrawRecord;
             NoteBranch(CurrentProjectData?.CurrentArtifact?.Branch);
@@ -97,6 +100,7 @@ namespace autodraw_plugin.Services
                 DrawingCache.Keep(projectId, data.Dxf, data.DxfScope ?? scope, data.Grid,
                     data.AutodrawMeta, data.AutodrawRecord, data.Notes, data.CurrentArtifact?.Branch);
             }
+            TempTiming.Lap("a4 cache write"); // TEMP TIMING
         }
 
         /// <summary>

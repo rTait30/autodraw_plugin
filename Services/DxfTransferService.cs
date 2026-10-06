@@ -195,6 +195,7 @@ public static class DxfTransferService
         using (Database source = new Database(false, true))
         {
             source.DxfIn(path, null);
+            TempTiming.Lap("c1 write temp + DxfIn"); // TEMP TIMING
 
             var ids = new ObjectIdCollection();
             using (Transaction tr = source.TransactionManager.StartTransaction())
@@ -225,6 +226,7 @@ public static class DxfTransferService
                 mapping,
                 DuplicateRecordCloning.Replace,
                 false);
+            TempTiming.Lap($"c2 clone into modelspace ({ids.Count})"); // TEMP TIMING
 
             return ids.Count;
         }

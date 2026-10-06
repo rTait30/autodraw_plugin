@@ -90,6 +90,32 @@ public static class PieceGroupService
     }
 
     /// <summary>
+    /// The highest piece number anywhere in modelspace, or 0 where there is none.
+    ///
+    /// Sent with a free operation so the pieces it hands back are numbered
+    /// above every piece already here: a group is made per number across the
+    /// whole drawing, and a result laid beside the copy it came from would
+    /// otherwise share every number with it and be grouped with it.
+    /// </summary>
+    public static int HighestObject(Database db)
+    {
+        int highest = 0;
+        using (Transaction tr = db.TransactionManager.StartTransaction())
+        {
+            BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+            BlockTableRecord ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
+            foreach (ObjectId id in ms)
+            {
+                if (tr.GetObject(id, OpenMode.ForRead) is Entity ent
+                    && int.TryParse(PieceOf(ent), out int number) && number > highest)
+                    highest = number;
+            }
+            tr.Commit();
+        }
+        return highest;
+    }
+
+    /// <summary>
     /// The piece an entity belongs to, or null for one belonging to none.
     ///
     /// Shared with the halo service, which buckets modelspace the same way so
