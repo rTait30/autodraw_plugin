@@ -195,6 +195,41 @@ public static class GridService
         }
     }
 
+    /// <summary>
+    /// Remove every picture of an earlier state from the drawing, placed and
+    /// defined. A picture is reused by its state's id, and the server reuses
+    /// ids once a job's states are deleted, so after a reset an old picture
+    /// would be shown for a new state that happens to take its number.
+    /// </summary>
+    public static int ForgetPictures(Transaction tr, Database db)
+    {
+        BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+        BlockTableRecord ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
+        foreach (ObjectId id in ms)
+        {
+            if (tr.GetObject(id, OpenMode.ForRead) is BlockReference placed
+                && placed.Name.StartsWith(SnapshotPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                placed.UpgradeOpen();
+                placed.Erase();
+            }
+        }
+
+        int count = 0;
+        foreach (ObjectId id in bt)
+        {
+            var block = (BlockTableRecord)tr.GetObject(id, OpenMode.ForRead);
+            if (!block.Name.StartsWith(SnapshotPrefix, StringComparison.OrdinalIgnoreCase)) continue;
+            // Placed somewhere other than modelspace by hand: leave it rather
+            // than fail on a definition still in use.
+            if (block.GetBlockReferenceIds(true, false).Count > 0) continue;
+            block.UpgradeOpen();
+            block.Erase();
+            count++;
+        }
+        return count;
+    }
+
     private static bool HasBlock(Database db, string name)
     {
         using (Transaction tr = db.TransactionManager.StartOpenCloseTransaction())

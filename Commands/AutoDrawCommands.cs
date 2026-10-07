@@ -388,6 +388,100 @@ public class AutoDrawCommands
         return choices[result.Value - 1].Key;
     }
 
+    /// <summary>
+    /// Start a job's automation over: delete it on the server and everything
+    /// kept of it here.
+    ///
+    /// Has to go through the plugin rather than the reset endpoint alone. The
+    /// server reuses the ids of deleted states, so the cache on disk and the
+    /// pictures in the drawing - both kept by state id and trusted never to go
+    /// stale - would otherwise be shown for whatever new state takes an old
+    /// number.
+    /// </summary>
+    [CommandMethod("ADRESET")]
+    public async void ResetAutoDraw()
+    {
+        Document doc = Application.DocumentManager.MdiActiveDocument;
+        Editor ed = doc.Editor;
+        Database db = doc.Database;
+
+        if (!autodraw.Auth.IsLoggedIn)
+        {
+            ed.WriteMessage("\nPlease login first (ADLOGIN).");
+            return;
+        }
+        if (StopIfPlaying(ed)) return;
+
+        int? loaded = autodraw.AutoDraw.CurrentProjectId;
+        PromptStringOptions options = new PromptStringOptions(
+            "\nProject to reset" + (loaded.HasValue ? $" <{loaded.Value}>" : "") + ": ")
+        {
+            AllowSpaces = false,
+        };
+        PromptResult answer = ed.GetString(options);
+        if (answer.Status != PromptStatus.OK) return;
+
+        int projectId;
+        if (string.IsNullOrWhiteSpace(answer.StringResult) && loaded.HasValue) projectId = loaded.Value;
+        else if (!int.TryParse(answer.StringResult, out projectId))
+        {
+            ed.WriteMessage("\nInvalid Project ID.");
+            return;
+        }
+
+        if (!Confirm(ed, $"\nDelete ALL automation for project {projectId} - every state, branch, "
+                         + "note and operation run, on the server and here? This cannot be undone."))
+        {
+            ed.WriteMessage("\nCancelled.");
+            return;
+        }
+
+        try
+        {
+            var result = await autodraw.AutoDraw.Reset(projectId);
+            if (!result.Success)
+            {
+                // The server kept everything, so what is kept here still matches it.
+                ed.WriteMessage($"\nReset refused: {result.Message}");
+                return;
+            }
+
+            int files = DrawingCache.Forget(projectId);
+            ed.WriteMessage($"\nProject {projectId} reset on the server; {files} cached files removed.");
+
+            // The drawing's pictures carry no project in their names, so they
+            // go whenever this drawing may be holding this job: it is the one
+            // loaded, or none is and there is no telling.
+            if (loaded == null || loaded == projectId)
+            {
+                int pictures;
+                using (doc.LockDocument())
+                using (Transaction tr = db.TransactionManager.StartTransaction())
+                {
+                    pictures = GridService.ForgetPictures(tr, db);
+                    tr.Commit();
+                }
+                if (pictures > 0) ed.WriteMessage($"\nRemoved {pictures} pictures of earlier states.");
+            }
+
+            if (loaded == projectId)
+            {
+                autodraw.AutoDraw.Forget();
+                ed.WriteMessage("\nThe drawing still shows the old job. Run ADSTART to begin it again.");
+            }
+            if (OperationService.ProjectId == projectId)
+            {
+                OperationService.CurrentArtifact = null;
+                OperationService.Loaded = false;
+            }
+            ed.Regen();
+        }
+        catch (Exception ex)
+        {
+            ed.WriteMessage($"\nError: {ex.Message}");
+        }
+    }
+
     [CommandMethod("ADSTATUS")]
     public async void StatusAutoDraw()
     {

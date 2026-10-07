@@ -111,6 +111,22 @@ public static class DrawingCache
     }
 
     /// <summary>
+    /// Drop everything kept for a project, once its states have been deleted
+    /// on the server. "Never stale" holds only while a state exists: the
+    /// server's ids are reused after a delete, so an entry kept from before a
+    /// reset would be played back as whatever state takes its id next.
+    /// Returns how many files went.
+    /// </summary>
+    public static int Forget(int projectId)
+    {
+        string folder = Path.Combine(Root, projectId.ToString());
+        if (!Directory.Exists(folder)) return 0;
+        int count = Directory.GetFiles(folder).Length;
+        Directory.Delete(folder, recursive: true);
+        return count;
+    }
+
+    /// <summary>
     /// The states ahead of this one on the line being followed, as far as this
     /// machine has seen them, each as its step.substep key and artifact.
     ///

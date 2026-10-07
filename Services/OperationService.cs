@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
 using System.Threading.Tasks;
 using Autodesk.AutoCAD.DatabaseServices;
@@ -43,6 +44,85 @@ public static class OperationService
         };
         string name = id.Split('@')[0];
         HttpResponseMessage response = await ApiService.PostDxf($"/operations/{name}/run", dxfPath, fields);
+        string body = await response.Content.ReadAsStringAsync();
+        try
+        {
+            OperationResultDTO? result = JsonConvert.DeserializeObject<OperationResultDTO>(body);
+            if (result != null)
+            {
+                if (!response.IsSuccessStatusCode && string.IsNullOrWhiteSpace(result.Error))
+                    result.Error = "http_" + (int)response.StatusCode;
+                return result;
+            }
+        }
+        catch (JsonException)
+        {
+        }
+        return new OperationResultDTO
+        {
+            Error = "http_" + (int)response.StatusCode,
+            Message = $"HTTP {(int)response.StatusCode} ({response.ReasonPhrase}) - the response was not JSON.",
+        };
+    }
+
+    /// <summary>
+    /// The project ADDO runs on, when one is chosen (ADDOPROJECT); a free run
+    /// on the drawing as it is otherwise.
+    /// </summary>
+    public static int? ProjectId { get; set; }
+
+    /// <summary>The project drawing last laid in here, which a run starts from.</summary>
+    public static int? CurrentArtifact { get; set; }
+
+    /// <summary>
+    /// Whether the drawing on screen is the project's as ADDO laid it in. Only
+    /// then is it sent back with a run: a drawing laid in some other way is in
+    /// another place on the page and would come back looking moved.
+    /// </summary>
+    public static bool Loaded { get; set; }
+
+    private static Dictionary<string, string> LaidOut() => new()
+    {
+        ["layout"] = PluginSettings.Current.Layout.ToLowerInvariant(),
+        ["direction"] = PluginSettings.Current.Direction.ToLowerInvariant(),
+    };
+
+    public static async Task<OperationResultDTO> ProjectDrawing(int projectId)
+    {
+        string query = string.Join("&", LaidOut().Select(pair => pair.Key + "=" + pair.Value));
+        HttpResponseMessage response = await ApiService.Get(
+            $"/projects/{projectId}/operations/drawing?{query}");
+        return await Read(response);
+    }
+
+    /// <summary>
+    /// Run an operation on the project, sending the drawing back with it where
+    /// one is given. Refusals - a value to ask, a project moved on - come back
+    /// readable rather than thrown.
+    /// </summary>
+    public static async Task<OperationResultDTO> RunOnProject(
+        int projectId, string id, string? dxfPath, JObject inputs, int? baseArtifact)
+    {
+        var fields = LaidOut();
+        fields["inputs"] = inputs.ToString(Formatting.None);
+        if (baseArtifact.HasValue) fields["base_artifact_id"] = baseArtifact.Value.ToString();
+        string endpoint = $"/projects/{projectId}/operations/{id.Split('@')[0]}/runs";
+        HttpResponseMessage response = dxfPath == null
+            ? await ApiService.PostForm(endpoint, fields)
+            : await ApiService.PostDxf(endpoint, dxfPath, fields);
+        return await Read(response);
+    }
+
+    /// <summary>Back along the project's history, or forward again.</summary>
+    public static async Task<OperationResultDTO> Step(int projectId, bool forward)
+    {
+        HttpResponseMessage response = await ApiService.PostForm(
+            $"/projects/{projectId}/operations/{(forward ? "forward" : "back")}", LaidOut());
+        return await Read(response);
+    }
+
+    private static async Task<OperationResultDTO> Read(HttpResponseMessage response)
+    {
         string body = await response.Content.ReadAsStringAsync();
         try
         {

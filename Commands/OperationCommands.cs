@@ -16,20 +16,25 @@ using Exception = System.Exception;
 namespace autodraw_plugin.Commands;
 
 /// <summary>
-/// ADOP: run one of the server's operations on what is in the drawing.
+/// ADDO: run one of the server's operations.
 ///
-/// Not a project command. Nothing is loaded and nothing is recorded, so there
-/// is no ADSTART first and no record to be in step with: the selection goes
-/// up, the operation's result comes back, and with Layout Replace it takes the
-/// place of exactly what was sent. With Layout Stack what was sent stays, and
-/// the result is laid beside it - Right or Down, from ADSETTINGS.
+/// With a project chosen (ADDOPROJECT) it runs on the project: the job answers
+/// what it can, the drawing goes back with the run where it was laid in here,
+/// and the project's new drawing is laid in whole - its earlier states beside
+/// it as pictures when stacking. ADDOBACK and ADDOFORWARD move along its
+/// history.
+///
+/// With none it is a free run on what is in the drawing: nothing is loaded or
+/// recorded, the selection goes up, the operation's result comes back, and
+/// with Layout Replace it takes the place of exactly what was sent. With Layout
+/// Stack what was sent stays, and the result is laid beside it.
 ///
 /// What a value means is the operation's business. It says what it needs and
 /// of what type, and this only picks the prompt to ask it with.
 /// </summary>
 public class OperationCommands
 {
-    [CommandMethod("ADOP")]
+    [CommandMethod("ADDO")]
     public async void RunOperation()
     {
         Document doc = Application.DocumentManager.MdiActiveDocument;
@@ -39,6 +44,11 @@ public class OperationCommands
         if (!autodraw.Auth.IsLoggedIn)
         {
             ed.WriteMessage("\nPlease login first (ADLOGIN).");
+            return;
+        }
+        if (OperationService.ProjectId.HasValue)
+        {
+            await RunOnProject(doc, OperationService.ProjectId.Value);
             return;
         }
 
@@ -118,6 +128,177 @@ public class OperationCommands
         finally
         {
             try { File.Delete(path); } catch (IOException) { }
+        }
+    }
+
+    /// <summary>Choose the project ADDO runs on, and lay its drawing in. Enter for none.</summary>
+    [CommandMethod("ADDOPROJECT")]
+    public async void ChooseProject()
+    {
+        Document doc = Application.DocumentManager.MdiActiveDocument;
+        Editor ed = doc.Editor;
+        PromptStringOptions options = new PromptStringOptions(
+            "\nProject to run operations on, or Enter for free runs on the drawing: ")
+        { AllowSpaces = false };
+        PromptResult said = ed.GetString(options);
+        if (said.Status != PromptStatus.OK) return;
+
+        if (string.IsNullOrWhiteSpace(said.StringResult))
+        {
+            OperationService.ProjectId = null;
+            OperationService.Loaded = false;
+            ed.WriteMessage("\nADDO now runs on the drawing as it is.");
+            return;
+        }
+        if (!int.TryParse(said.StringResult, out int projectId))
+        {
+            ed.WriteMessage("\nNot a project number.");
+            return;
+        }
+        try
+        {
+            OperationResultDTO drawn = await OperationService.ProjectDrawing(projectId);
+            if (!string.IsNullOrEmpty(drawn.Error)) { ed.WriteMessage($"\n{drawn.Message ?? drawn.Error}"); return; }
+            OperationService.ProjectId = projectId;
+            LayIn(doc, drawn);
+            ed.WriteMessage($"\nADDO now runs on project {projectId}.");
+        }
+        catch (Exception ex)
+        {
+            ed.WriteMessage($"\nError: {ex.Message}");
+        }
+    }
+
+    [CommandMethod("ADDOBACK")]
+    public async void StepBack() => await StepAlong(false);
+
+    [CommandMethod("ADDOFORWARD")]
+    public async void StepForward() => await StepAlong(true);
+
+    private static async Task StepAlong(bool forward)
+    {
+        Document doc = Application.DocumentManager.MdiActiveDocument;
+        Editor ed = doc.Editor;
+        if (!OperationService.ProjectId.HasValue)
+        {
+            ed.WriteMessage("\nNo project chosen (ADDOPROJECT).");
+            return;
+        }
+        try
+        {
+            OperationResultDTO moved = await OperationService.Step(OperationService.ProjectId.Value, forward);
+            if (!string.IsNullOrEmpty(moved.Error)) ed.WriteMessage($"\n{moved.Message ?? moved.Error}");
+            if (moved.Drawing != null) LayIn(doc, moved);
+        }
+        catch (Exception ex)
+        {
+            ed.WriteMessage($"\nError: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Run on the project: the drawing goes back with it if it was laid in by
+    /// ADDO, the job answers what it can and anything else is asked, and the
+    /// project's new drawing replaces this one whole.
+    /// </summary>
+    private static async Task RunOnProject(Document doc, int projectId)
+    {
+        Editor ed = doc.Editor;
+        Database db = doc.Database;
+        string path = Path.Combine(Path.GetTempPath(), $"autodraw_op_{Guid.NewGuid():N}.dxf");
+        try
+        {
+            string? chosen = ChooseOperation(ed, await OperationService.Catalogue());
+            if (chosen == null) { ed.WriteMessage("\nCancelled."); return; }
+
+            string? sending = null;
+            if (OperationService.Loaded)
+            {
+                ObjectId[] everything = AllOfModelspace(db)
+                    .Where(id => !IsDecoration(db, id)).ToArray();
+                using (doc.LockDocument())
+                {
+                    OperationService.Export(db, new ObjectIdCollection(everything), path);
+                }
+                sending = path;
+            }
+            ed.WriteMessage($"\nRunning {chosen} on project {projectId}...");
+
+            var inputs = new JObject();
+            OperationResultDTO result = await OperationService.RunOnProject(
+                projectId, chosen, sending, inputs, OperationService.CurrentArtifact);
+            while (result.Error == "needs_input" && result.Inputs != null)
+            {
+                // The drawing is kept with the first call; answers go without it.
+                OperationService.CurrentArtifact = result.ArtifactId;
+                if (!Ask(ed, result.Inputs, inputs)) { ed.WriteMessage("\nCancelled."); return; }
+                result = await OperationService.RunOnProject(
+                    projectId, chosen, null, inputs, OperationService.CurrentArtifact);
+            }
+
+            foreach (string line in result.Interpreted ?? new List<string>())
+                ed.WriteMessage("\n  " + line);
+            if (!string.IsNullOrEmpty(result.Error))
+            {
+                ed.WriteMessage($"\nStopped: {result.Message ?? result.Error}");
+                if (result.Error == "stale") ed.WriteMessage("\nRun ADDOPROJECT to lay the project in again.");
+                return;
+            }
+
+            LayIn(doc, result);
+            if (!string.IsNullOrWhiteSpace(result.Notes)) ed.WriteMessage("\n" + result.Notes);
+            foreach (string warning in result.Warnings ?? new List<string>())
+                ed.WriteMessage("\nWarning: " + warning);
+        }
+        catch (Exception ex)
+        {
+            ed.WriteMessage($"\nError: {ex.Message}");
+        }
+        finally
+        {
+            try { File.Delete(path); } catch (IOException) { }
+        }
+    }
+
+    /// <summary>
+    /// Replace the drawing with the project's as just sent: everything but the
+    /// decoration goes, the drawing comes in, and when stacking the pictures of
+    /// its earlier states go on the history layer beside it.
+    /// </summary>
+    private static void LayIn(Document doc, OperationResultDTO drawn)
+    {
+        Database db = doc.Database;
+        using (doc.LockDocument())
+        {
+            using (Transaction tr = db.TransactionManager.StartTransaction())
+            {
+                DxfTransferService.EraseAllExcept(tr, db, AutoDrawVisualizer.DecorationLayers);
+                AutoDrawVisualizer.EnsureLayer(tr, db, GridService.HistoryLayer);
+                AutoDrawVisualizer.ClearLayer(tr, db, GridService.HistoryLayer);
+                tr.Commit();
+            }
+            DxfTransferService.ImportBase64(db, drawn.Drawing ?? "");
+            if (!string.IsNullOrEmpty(drawn.History)) DxfTransferService.ImportBase64(db, drawn.History);
+            using (Transaction tr = db.TransactionManager.StartTransaction())
+            {
+                PieceGroupService.Rebuild(tr, db);
+                tr.Commit();
+            }
+        }
+        doc.Editor.Regen();
+        OperationService.CurrentArtifact = drawn.ArtifactId;
+        OperationService.Loaded = true;
+    }
+
+    private static bool IsDecoration(Database db, ObjectId id)
+    {
+        var decoration = new HashSet<string>(AutoDrawVisualizer.DecorationLayers,
+                                             StringComparer.OrdinalIgnoreCase);
+        using (Transaction tr = db.TransactionManager.StartTransaction())
+        {
+            bool found = tr.GetObject(id, OpenMode.ForRead) is Entity ent && decoration.Contains(ent.Layer);
+            tr.Commit();
+            return found;
         }
     }
 

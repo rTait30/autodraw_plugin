@@ -303,6 +303,30 @@ namespace autodraw_plugin.Services
             return body.Length > 300 ? body.Substring(0, 300) + "..." : body;
         }
 
+        /// <summary>
+        /// Delete a project's automation on the server - its record, its
+        /// position and every artifact, operation runs included.
+        /// </summary>
+        public async Task<ContinueResponseDTO> Reset(int projectId)
+        {
+            HttpResponseMessage response = await ApiService.PostForm(
+                $"/automation/reset/{projectId}", new Dictionary<string, string>());
+            return await Interpret(response, "ADRESET");
+        }
+
+        /// <summary>
+        /// Let go of the loaded project, so the next command asks for one and
+        /// fetches it afresh rather than acting on a record that is gone.
+        /// </summary>
+        public void Forget()
+        {
+            CurrentProjectId = null;
+            CurrentProjectData = null;
+            CurrentMeta = null;
+            CurrentRecord = null;
+            CurrentBranch = null;
+        }
+
         public bool HasActiveProject => CurrentProjectId.HasValue && CurrentProjectData != null;
             /// <summary>
         /// The gap the server says two pieces need between them, or null where

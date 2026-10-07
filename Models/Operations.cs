@@ -67,6 +67,14 @@ public class OperationResultDTO
     [JsonProperty("operation")]
     public string? Operation { get; set; }
 
+    /// <summary>A project's drawing this reply leaves it at.</summary>
+    [JsonProperty("artifact_id")]
+    public int? ArtifactId { get; set; }
+
+    /// <summary>Pictures of a project's earlier states, base64 DXF, when stacking.</summary>
+    [JsonProperty("history")]
+    public string? History { get; set; }
+
     /// <summary>The whole drawing after the operation, base64 DXF.</summary>
     [JsonProperty("drawing")]
     public string? Drawing { get; set; }
