@@ -13,8 +13,74 @@ public class OperationDTO
     [JsonProperty("name")]
     public string Name { get; set; } = "";
 
+    /// <summary>"operation", or "recipe" for one made of others.</summary>
+    [JsonProperty("kind")]
+    public string Kind { get; set; } = "operation";
+
     [JsonProperty("inputs")]
     public List<OperationInputDTO> Inputs { get; set; } = new();
+
+    /// <summary>What has to be drawn (`roles`) or known (`facts`) before it can run.</summary>
+    [JsonProperty("needs")]
+    public JObject? Needs { get; set; }
+
+    /// <summary>A recipe's steps as typed - `seam_marks, label_panels(height=150)` - to edit and save again.</summary>
+    [JsonProperty("written")]
+    public string? Written { get; set; }
+
+    [JsonProperty("label")]
+    public string? Label { get; set; }
+
+    [JsonProperty("description")]
+    public string? Description { get; set; }
+
+    /// <summary>Why a recipe can no longer run - a step since removed - where it cannot.</summary>
+    [JsonProperty("broken")]
+    public string? Broken { get; set; }
+
+    /// <summary>Whether it runs on nothing drawn at all - one that draws a job from its data.</summary>
+    public bool NeedsNothingDrawn => Needs?["roles"] is not JArray roles || roles.Count == 0;
+}
+
+/// <summary>
+/// A recipe as the server saved it, with what it worked out it asks, needs and
+/// makes - for the designer to check.
+/// </summary>
+public class RecipeDTO
+{
+    [JsonProperty("id")]
+    public string Id { get; set; } = "";
+
+    [JsonProperty("operations")]
+    public List<string> Operations { get; set; } = new();
+
+    [JsonProperty("written")]
+    public string? Written { get; set; }
+
+    [JsonProperty("inputs")]
+    public List<OperationInputDTO> Inputs { get; set; } = new();
+
+    [JsonProperty("needs")]
+    public JObject? Needs { get; set; }
+
+    [JsonProperty("warnings")]
+    public List<string> Warnings { get; set; } = new();
+}
+
+public class RecipeSavedDTO
+{
+    [JsonProperty("recipe")]
+    public RecipeDTO? Recipe { get; set; }
+
+    /// <summary>False where the newest version already had these steps.</summary>
+    [JsonProperty("created")]
+    public bool Created { get; set; }
+
+    [JsonProperty("error")]
+    public string? Error { get; set; }
+
+    [JsonProperty("message")]
+    public string? Message { get; set; }
 }
 
 public class OperationCatalogueDTO
@@ -97,4 +163,15 @@ public class OperationResultDTO
 
     [JsonProperty("inputs")]
     public List<OperationInputDTO>? Inputs { get; set; }
+
+    /// <summary>Which step of a recipe refused or asked, counted from one, and of how many.</summary>
+    [JsonProperty("step")]
+    public int? Step { get; set; }
+
+    [JsonProperty("steps")]
+    public int? Steps { get; set; }
+
+    /// <summary>The operations that ran, in order.</summary>
+    [JsonProperty("ran")]
+    public List<string>? Ran { get; set; }
 }

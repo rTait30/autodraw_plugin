@@ -50,7 +50,11 @@ public static class AutoDrawVisualizer
     /// adopts it as geometry nobody can redraw.
     /// </summary>
     public static readonly string[] DecorationLayers =
-        { InfoLayer, NotesLayer, ToleranceLayer, GridService.LabelLayer, GridService.HistoryLayer };
+        { InfoLayer, NotesLayer, ToleranceLayer, GridService.LabelLayer, GridService.HistoryLayer,
+          CaptionLayer };
+
+    /// <summary>The server's caption over each state of a run drawn step by step.</summary>
+    public const string CaptionLayer = "AUTODRAW_CAPTION";
 
     /// <summary>
     /// The board sits at a fixed spot rather than tracking the drawing's edge,

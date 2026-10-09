@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
@@ -42,8 +43,12 @@ public static class OperationService
             ["layout"] = PluginSettings.Current.Layout.ToLowerInvariant(),
             ["direction"] = PluginSettings.Current.Direction.ToLowerInvariant(),
         };
-        string name = id.Split('@')[0];
-        HttpResponseMessage response = await ApiService.PostDxf($"/operations/{name}/run", dxfPath, fields);
+        if (DataProjectId.HasValue) fields["project_id"] = DataProjectId.Value.ToString();
+        // The states along the way, as deep as the designer asked to see them.
+        int depth = PluginSettings.Current.StepsDepth;
+        if (depth != 0) fields["steps_depth"] = depth < 0 ? "all" : depth.ToString();
+        HttpResponseMessage response = await ApiService.PostDxf(
+            $"/operations/{Uri.EscapeDataString(id)}/run", dxfPath, fields);
         string body = await response.Content.ReadAsStringAsync();
         try
         {
@@ -70,6 +75,12 @@ public static class OperationService
     /// on the drawing as it is otherwise.
     /// </summary>
     public static int? ProjectId { get; set; }
+
+    /// <summary>
+    /// The project a free run takes its answers from (ADDODATA), storing
+    /// nothing on it; none, and everything not in the drawing is asked.
+    /// </summary>
+    public static int? DataProjectId { get; set; }
 
     /// <summary>The project drawing last laid in here, which a run starts from.</summary>
     public static int? CurrentArtifact { get; set; }
@@ -106,11 +117,55 @@ public static class OperationService
         var fields = LaidOut();
         fields["inputs"] = inputs.ToString(Formatting.None);
         if (baseArtifact.HasValue) fields["base_artifact_id"] = baseArtifact.Value.ToString();
-        string endpoint = $"/projects/{projectId}/operations/{id.Split('@')[0]}/runs";
+        string endpoint = $"/projects/{projectId}/operations/{Uri.EscapeDataString(id)}/runs";
         HttpResponseMessage response = dxfPath == null
             ? await ApiService.PostForm(endpoint, fields)
             : await ApiService.PostDxf(endpoint, dxfPath, fields);
         return await Read(response);
+    }
+
+    /// <summary>Save the last `count` operations run on the project as the recipe `name`.</summary>
+    public static async Task<RecipeSavedDTO> SaveRecipe(int projectId, string name, int count)
+    {
+        // As a form, which is read rather than thrown on when it is refused.
+        return await ReadSaved(await ApiService.PostForm(
+            $"/projects/{projectId}/recipes",
+            new Dictionary<string, string> { ["name"] = name, ["count"] = count.ToString() }));
+    }
+
+    /// <summary>
+    /// Save `steps`, a line as typed, as the recipe `name` - its next version
+    /// where it is one already. The server reads the line; empty fields keep
+    /// what the newest version had.
+    /// </summary>
+    public static async Task<RecipeSavedDTO> SaveRecipe(string name, string steps, string label,
+                                                        string description)
+    {
+        return await ReadSaved(await ApiService.PostForm("/recipes", new Dictionary<string, string>
+        {
+            ["name"] = name,
+            ["steps"] = steps,
+            ["label"] = label,
+            ["description"] = description,
+        }));
+    }
+
+    private static async Task<RecipeSavedDTO> ReadSaved(HttpResponseMessage response)
+    {
+        string body = await response.Content.ReadAsStringAsync();
+        try
+        {
+            RecipeSavedDTO? saved = JsonConvert.DeserializeObject<RecipeSavedDTO>(body);
+            if (saved != null) return saved;
+        }
+        catch (JsonException)
+        {
+        }
+        return new RecipeSavedDTO
+        {
+            Error = "http_" + (int)response.StatusCode,
+            Message = $"HTTP {(int)response.StatusCode} ({response.ReasonPhrase}) - the response was not JSON.",
+        };
     }
 
     /// <summary>Back along the project's history, or forward again.</summary>

@@ -41,6 +41,14 @@ public class PluginSettings
     /// </summary>
     public string Gridlines { get; set; } = "All";
 
+    /// <summary>
+    /// How far into a free ADDO of several steps - a list typed in or a recipe
+    /// - its states are drawn, each beside the last with a caption, in Stack
+    /// layout: 0 only the final one, 1 one per step, 2 opening the recipes
+    /// inside it one level, -1 after every operation however deep.
+    /// </summary>
+    public int StepsDepth { get; set; }
+
     private static readonly string FilePath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "autodraw", "settings.json");

@@ -1235,13 +1235,15 @@ public class AutoDrawCommands
         {
             PromptKeywordOptions options = new PromptKeywordOptions(
                 $"\nAuto {(settings.Auto ? "On" : "Off")}, tick {settings.TickSeconds:0.##}s, "
-                + $"{settings.Layout} {settings.Direction}, gridlines {settings.Gridlines}. "
-                + "Change [Auto/Tick/Layout/Direction/Gridlines] <done>: ");
+                + $"{settings.Layout} {settings.Direction}, gridlines {settings.Gridlines}, "
+                + $"steps {(settings.StepsDepth == 0 ? "Off" : settings.StepsDepth < 0 ? "All" : settings.StepsDepth.ToString())}. "
+                + "Change [Auto/Tick/Layout/Direction/Gridlines/Steps] <done>: ");
             options.Keywords.Add("Auto");
             options.Keywords.Add("Tick");
             options.Keywords.Add("Layout");
             options.Keywords.Add("Direction");
             options.Keywords.Add("Gridlines");
+            options.Keywords.Add("Steps");
             options.AllowNone = true;
 
             PromptResult picked = ed.GetKeywords(options);
@@ -1258,6 +1260,28 @@ public class AutoDrawCommands
                 PromptResult said = ed.GetKeywords(which);
                 if (said.Status != PromptStatus.OK) continue;
                 settings.Gridlines = said.StringResult;
+                settings.Save();
+                continue;
+            }
+
+            if (picked.StringResult == "Steps")
+            {
+                // In Stack, a free ADDO of several steps draws its states
+                // beside each other: 0 only the last, 1 one per step, 2 one
+                // level into the recipes inside it, All every operation.
+                PromptIntegerOptions depth = new PromptIntegerOptions(
+                    "\nDraw each state of a free ADDO down to depth (0 off, 1 each step, 2 into its recipes) or [All]")
+                {
+                    AllowNegative = false,
+                    AllowNone = true,
+                    DefaultValue = Math.Max(settings.StepsDepth, 0),
+                    UseDefaultValue = settings.StepsDepth >= 0,
+                };
+                depth.Keywords.Add("All");
+                PromptIntegerResult said = ed.GetInteger(depth);
+                if (said.Status == PromptStatus.Keyword) settings.StepsDepth = -1;
+                else if (said.Status == PromptStatus.OK) settings.StepsDepth = said.Value;
+                else continue;
                 settings.Save();
                 continue;
             }
