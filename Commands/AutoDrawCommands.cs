@@ -204,7 +204,9 @@ public class AutoDrawCommands
                 AutoDrawVisualizer.DrawStatusBoard(tr, btr, data.AutodrawConfig, data.AutodrawMeta, origin,
                     autodraw.AutoDraw.CurrentBranch);
                 RedrawNotes(tr, db, btr, data.Notes);
-                GridService.DrawLabels(tr, db, btr, data.Grid);
+                GridService.DrawLabels(tr, db, btr, data.Grid,
+                    AutoDrawVisualizer.ManualTurn(data.AutodrawConfig, data.AutodrawMeta));
+                AnnounceTurn(data.AutodrawConfig, data.AutodrawMeta);
 
                 tr.Commit();
             }
@@ -602,7 +604,11 @@ public class AutoDrawCommands
                         result.Data?.AutodrawMeta ?? autodraw.AutoDraw.CurrentProjectData!.AutodrawMeta,
                         origin, autodraw.AutoDraw.CurrentBranch);
                     RedrawNotes(tr, db, btr, result.Notes);
-                    GridService.DrawLabels(tr, db, btr, result.Grid);
+                    GridService.DrawLabels(tr, db, btr, result.Grid,
+                        AutoDrawVisualizer.ManualTurn(autodraw.AutoDraw.CurrentProjectData!.AutodrawConfig,
+                            result.Data?.AutodrawMeta ?? autodraw.AutoDraw.CurrentProjectData!.AutodrawMeta));
+                    AnnounceTurn(autodraw.AutoDraw.CurrentProjectData!.AutodrawConfig,
+                        result.Data?.AutodrawMeta ?? autodraw.AutoDraw.CurrentProjectData!.AutodrawMeta);
 
                     tr.Commit();
                 }
@@ -789,7 +795,11 @@ public class AutoDrawCommands
                         result.Data?.AutodrawMeta ?? autodraw.AutoDraw.CurrentProjectData!.AutodrawMeta,
                         origin, autodraw.AutoDraw.CurrentBranch);
                     RedrawNotes(tr, db, btr, result.Notes);
-                    GridService.DrawLabels(tr, db, btr, result.Grid);
+                    GridService.DrawLabels(tr, db, btr, result.Grid,
+                        AutoDrawVisualizer.ManualTurn(autodraw.AutoDraw.CurrentProjectData!.AutodrawConfig,
+                            result.Data?.AutodrawMeta ?? autodraw.AutoDraw.CurrentProjectData!.AutodrawMeta));
+                    AnnounceTurn(autodraw.AutoDraw.CurrentProjectData!.AutodrawConfig,
+                        result.Data?.AutodrawMeta ?? autodraw.AutoDraw.CurrentProjectData!.AutodrawMeta);
 
                     tr.Commit();
                 }
@@ -963,7 +973,8 @@ public class AutoDrawCommands
                     autodraw.AutoDraw.CurrentProjectData!.AutodrawConfig,
                     meta, origin, autodraw.AutoDraw.CurrentBranch);
                 RedrawNotes(tr, db, btr, notes);
-                GridService.DrawLabels(tr, db, btr, grid);
+                GridService.DrawLabels(tr, db, btr, grid,
+                    AutoDrawVisualizer.ManualTurn(autodraw.AutoDraw.CurrentProjectData!.AutodrawConfig, meta));
 
                 tr.Commit();
             }
@@ -1139,6 +1150,20 @@ public class AutoDrawCommands
         return option == null || !option.Automated;
     }
 
+    /// <summary>
+    /// Say so on the command line when the job is waiting on a person: which
+    /// substep, what to do, and where - the cell outlined in red.
+    /// </summary>
+    private static void AnnounceTurn(AutoDrawConfigDTO? config, AutoDrawMetaDTO? meta)
+    {
+        if (AutoDrawVisualizer.ManualTurn(config, meta) is not { } turn) return;
+        Editor ed = Application.DocumentManager.MdiActiveDocument.Editor;
+        ed.WriteMessage($"\n\n*** YOUR TURN: {turn.step.Label} - {turn.substep.Label} ***");
+        string? about = AutoDrawVisualizer.Explain(turn.substep);
+        if (about != null) ed.WriteMessage("\n" + about);
+        ed.WriteMessage("\nDraw it in the cell outlined in red, then ADCONTINUE.\n");
+    }
+
     /// <summary>Whether a step.substep key lies at or after where the job is now.</summary>
     private static bool IsAhead(string key)
     {
@@ -1229,7 +1254,8 @@ public class AutoDrawCommands
         Document doc = Application.DocumentManager.MdiActiveDocument;
         Editor ed = doc.Editor;
         PluginSettings settings = PluginSettings.Current;
-        string laidOutAs = settings.Layout + "/" + settings.Direction + "/" + settings.Gridlines;
+        string laidOutAs = settings.Layout + "/" + settings.Direction + "/" + settings.Gridlines
+                           + "/" + settings.Descriptions;
 
         while (true)
         {
@@ -1237,17 +1263,33 @@ public class AutoDrawCommands
                 $"\nAuto {(settings.Auto ? "On" : "Off")}, tick {settings.TickSeconds:0.##}s, "
                 + $"{settings.Layout} {settings.Direction}, gridlines {settings.Gridlines}, "
                 + $"steps {(settings.StepsDepth == 0 ? "Off" : settings.StepsDepth < 0 ? "All" : settings.StepsDepth.ToString())}. "
-                + "Change [Auto/Tick/Layout/Direction/Gridlines/Steps] <done>: ");
+                + $"info descriptions {(settings.Descriptions ? "On" : "Off")}. "
+                + "Change [Auto/Tick/Layout/Direction/Gridlines/Steps/Info] <done>: ");
             options.Keywords.Add("Auto");
             options.Keywords.Add("Tick");
             options.Keywords.Add("Layout");
             options.Keywords.Add("Direction");
             options.Keywords.Add("Gridlines");
             options.Keywords.Add("Steps");
+            options.Keywords.Add("Info");
             options.AllowNone = true;
 
             PromptResult picked = ed.GetKeywords(options);
             if (picked.Status != PromptStatus.OK || string.IsNullOrEmpty(picked.StringResult)) break;
+
+            if (picked.StringResult == "Info")
+            {
+                PromptKeywordOptions onOff = new PromptKeywordOptions(
+                    "\nDescribe every substep on the INFO board [On/Off] (a substep waiting on you always is): ");
+                onOff.Keywords.Add("On");
+                onOff.Keywords.Add("Off");
+                onOff.Keywords.Default = settings.Descriptions ? "On" : "Off";
+                PromptResult said = ed.GetKeywords(onOff);
+                if (said.Status != PromptStatus.OK) continue;
+                settings.Descriptions = said.StringResult == "On";
+                settings.Save();
+                continue;
+            }
 
             if (picked.StringResult == "Gridlines")
             {
@@ -1332,7 +1374,8 @@ public class AutoDrawCommands
 
         // The layout is the server's to apply, so a change is seen by asking for
         // the job again in it - the whole drawing, laid out afresh.
-        if (settings.Layout + "/" + settings.Direction + "/" + settings.Gridlines != laidOutAs
+        if (settings.Layout + "/" + settings.Direction + "/" + settings.Gridlines
+            + "/" + settings.Descriptions != laidOutAs
             && autodraw.AutoDraw.HasActiveProject)
         {
             if (StopIfPlaying(ed)) return;
@@ -1519,7 +1562,9 @@ public class AutoDrawCommands
                         result.Data?.AutodrawMeta ?? autodraw.AutoDraw.CurrentProjectData!.AutodrawMeta,
                         origin, autodraw.AutoDraw.CurrentBranch);
                     RedrawNotes(tr, db, btr, result.Notes);
-                    GridService.DrawLabels(tr, db, btr, result.Grid);
+                    GridService.DrawLabels(tr, db, btr, result.Grid,
+                        AutoDrawVisualizer.ManualTurn(autodraw.AutoDraw.CurrentProjectData!.AutodrawConfig,
+                            result.Data?.AutodrawMeta ?? autodraw.AutoDraw.CurrentProjectData!.AutodrawMeta));
 
                     tr.Commit();
                 }
@@ -1539,6 +1584,7 @@ public class AutoDrawCommands
                     ? "\nComplete."
                     : $"\nNow at step {meta.CurrentStep}, substep {meta.CurrentSubstep}.");
             }
+            AnnounceTurn(autodraw.AutoDraw.CurrentProjectData?.AutodrawConfig, meta);
             return !(meta?.IsComplete ?? false);
         }
         catch (Exception ex)

@@ -35,8 +35,14 @@ public static class GridService
     /// <summary>The grid last drawn, for a playing job to follow.</summary>
     public static GridDTO? Last { get; private set; }
 
-    /// <summary>Redraw the labels for the state now in the drawing.</summary>
-    public static void DrawLabels(Transaction tr, Database db, BlockTableRecord btr, GridDTO? grid)
+    /// <summary>
+    /// Redraw the labels for the state now in the drawing, and mark where it
+    /// is: the cells of the state in hand are outlined boldly, and when the job
+    /// waits on a person (<paramref name="turn"/>) more boldly still, with what
+    /// to do written in them.
+    /// </summary>
+    public static void DrawLabels(Transaction tr, Database db, BlockTableRecord btr, GridDTO? grid,
+                                  (ConfigStepDTO step, ConfigSubstepDTO substep)? turn = null)
     {
         AutoDrawVisualizer.EnsureLayer(tr, db, LabelLayer);
         AutoDrawVisualizer.ClearLayer(tr, db, LabelLayer);
@@ -83,6 +89,48 @@ public static class GridService
             };
             btr.AppendEntity(text);
             tr.AddNewlyCreatedDBObject(text, true);
+        }
+
+        // Where the state in hand is, whatever the gridlines say: the cells of
+        // an item step, or the band for a project step.
+        var live = grid.Project
+            ? (grid.Focus?.Count >= 4 ? new List<List<double>> { grid.Focus } : new List<List<double>>())
+            : grid.Cells ?? new List<List<double>>();
+        double size = grid.Cell > 0 ? grid.Cell : 30000;
+        foreach (List<double> box in live)
+        {
+            if (box == null || box.Count < 4) continue;
+            Polyline outline = new Polyline
+            {
+                Layer = LabelLayer,
+                Closed = true,
+                ColorIndex = turn != null ? 1 : 4,
+                ConstantWidth = size * (turn != null ? 0.006 : 0.002),
+            };
+            outline.AddVertexAt(0, new Point2d(box[0], box[1]), 0, 0, 0);
+            outline.AddVertexAt(1, new Point2d(box[2], box[1]), 0, 0, 0);
+            outline.AddVertexAt(2, new Point2d(box[2], box[3]), 0, 0, 0);
+            outline.AddVertexAt(3, new Point2d(box[0], box[3]), 0, 0, 0);
+            btr.AppendEntity(outline);
+            tr.AddNewlyCreatedDBObject(outline, true);
+
+            if (turn is not { } waiting) continue;
+            // What to do, written where it is to be done. A cell's label sits
+            // in its top-left corner, so this goes under it; the band's label
+            // sits above the band, so this goes just inside it.
+            double top = grid.Project ? grid.BandTop - 600 : box[3] - 1600;
+            string about = AutoDrawVisualizer.Explain(waiting.substep) ?? "";
+            MText banner = new MText
+            {
+                Contents = $"{{\\H900;\\C1;YOUR TURN - {waiting.step.Label}: {waiting.substep.Label}}}"
+                         + $"\\P{{\\H450;\\C2;{about}\\PDraw it here, then ADCONTINUE.}}",
+                Location = new Point3d(box[0] + 600, top, 0),
+                TextHeight = 450,
+                Width = size * 0.6,
+                Layer = LabelLayer,
+            };
+            btr.AppendEntity(banner);
+            tr.AddNewlyCreatedDBObject(banner, true);
         }
     }
 

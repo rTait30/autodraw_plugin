@@ -49,6 +49,10 @@ public class ConfigSubstepDTO
     [JsonProperty("method")]
     public string Method { get; set; }
 
+    /// <summary>What a person does at this substep, for when the job stops for them.</summary>
+    [JsonProperty("description")]
+    public string Description { get; set; }
+
     [JsonProperty("options")]
     public List<ConfigSubstepOptionDTO> Options { get; set; } = new();
 }

@@ -212,6 +212,27 @@ public static class AutoDrawVisualizer
         }
     }
 
+    /// <summary>
+    /// The step and substep the job is waiting at when a person draws it, or
+    /// null when the server runs it or the job is done. Resolved as the server
+    /// resolves it: the default option, else the first.
+    /// </summary>
+    public static (ConfigStepDTO step, ConfigSubstepDTO substep)? ManualTurn(AutoDrawConfigDTO? config, AutoDrawMetaDTO? meta)
+    {
+        var steps = config?.Steps;
+        if (steps == null || meta == null || meta.IsComplete || meta.CurrentStep >= steps.Count) return null;
+        var step = steps[meta.CurrentStep];
+        if (step.Substeps == null || meta.CurrentSubstep >= step.Substeps.Count) return null;
+        var substep = step.Substeps[meta.CurrentSubstep];
+        var option = substep.Options?.FirstOrDefault(o => o.IsDefault) ?? substep.Options?.FirstOrDefault();
+        return option != null && !option.Automated ? (step, substep) : null;
+    }
+
+    /// <summary>What to tell a person about a substep: its description, else its one-line method.</summary>
+    public static string? Explain(ConfigSubstepDTO substep)
+        => !string.IsNullOrWhiteSpace(substep.Description) ? substep.Description
+         : !string.IsNullOrWhiteSpace(substep.Method) ? substep.Method : null;
+
     public static void DrawStatusBoard(Transaction tr, BlockTableRecord btr, AutoDrawConfigDTO config, AutoDrawMetaDTO meta, Point3d startPt, string branch = null)
     {
         double currentY = startPt.Y;
@@ -275,6 +296,23 @@ public static class AutoDrawVisualizer
                 tr.AddNewlyCreatedDBObject(subText, true);
 
                 currentY -= textHeightSub * 1.5;
+
+                // The substep waiting on a person always says what to do;
+                // the rest only when the designer has asked to see them all.
+                string? explained = Explain(substep);
+                bool turn = isCurrentSub && manual && !meta.IsComplete;
+                if (explained != null && (turn || PluginSettings.Current.Descriptions))
+                {
+                    MText about = new MText();
+                    about.Contents = (turn ? "{\\C2;" : "{\\C252;") + explained + "}";
+                    about.Location = new Point3d(startPt.X + 2000, currentY, 0);
+                    about.TextHeight = textHeightSub * 0.7;
+                    about.Width = textHeightSub * 50;
+                    about.Layer = InfoLayer;
+                    btr.AppendEntity(about);
+                    tr.AddNewlyCreatedDBObject(about, true);
+                    currentY -= about.ActualHeight + textHeightSub * 0.8;
+                }
             }
             currentY -= stepGap;
         }

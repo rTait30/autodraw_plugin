@@ -49,6 +49,12 @@ public class PluginSettings
     /// </summary>
     public int StepsDepth { get; set; }
 
+    /// <summary>
+    /// Write every substep's description under it on the INFO board. The
+    /// substep waiting on a person always shows its own, whatever this says.
+    /// </summary>
+    public bool Descriptions { get; set; }
+
     private static readonly string FilePath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "autodraw", "settings.json");

@@ -219,12 +219,15 @@ public static class DxfTransferService
                 tr.Commit();
             }
 
+            // Ignore, not Replace: a layer the drawing already has keeps its
+            // colour and settings. The server writes bare layers, so replacing
+            // turned every one it named back to the default.
             IdMapping mapping = new IdMapping();
             source.WblockCloneObjects(
                 ids,
                 destination,
                 mapping,
-                DuplicateRecordCloning.Replace,
+                DuplicateRecordCloning.Ignore,
                 false);
             TempTiming.Lap($"c2 clone into modelspace ({ids.Count})"); // TEMP TIMING
 
