@@ -379,7 +379,10 @@ public class OperationCommands
                     .Where(id => !IsDecoration(db, id)).ToArray();
                 using (doc.LockDocument())
                 {
-                    OperationService.Export(db, new ObjectIdCollection(everything), path);
+                    // An ObjectIdCollection made from an empty array throws - a
+                    // project with no runs yet lays in nothing.
+                    OperationService.Export(db, everything.Length > 0 ? new ObjectIdCollection(everything)
+                                                                      : new ObjectIdCollection(), path);
                 }
                 sending = path;
             }
