@@ -29,10 +29,12 @@ public class AuthService : IDisposable
     public string Role { get; private set; }
     public bool IsVerified { get; private set; }
 
+    public bool IsLoggedIn => !string.IsNullOrEmpty(RefreshToken);
+
     DateTime accessExpiresUtc = DateTime.MinValue;
     readonly SemaphoreSlim refreshing = new SemaphoreSlim(1, 1);
 
-    public bool IsLoggedIn => !string.IsNullOrEmpty(RefreshToken);
+    
 
     /// <summary>
     /// Pick up the login saved by the last ADLOGIN. There is no access token

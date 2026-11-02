@@ -75,6 +75,14 @@ public class AutoDrawCommands
         if (picked == null) return false;
 
         ed.WriteMessage($"\nFetching project {picked.Value}...");
+
+        if (!autodraw.Auth.IsLoggedIn)
+        {
+            ed.WriteMessage("\nPlease login first (ADLOGIN).");
+            return false;
+        }
+
+
         await autodraw.AutoDraw.StartProject(picked.Value);
 
         if (!autodraw.AutoDraw.HasActiveProject)
@@ -90,12 +98,18 @@ public class AutoDrawCommands
     {
         Document doc = Application.DocumentManager.MdiActiveDocument;
         Editor ed = doc.Editor;
+
+        ed.WriteMessage($"\nLogged in: {autodraw.Auth.IsLoggedIn}...");
+
+
         Database db = doc.Database;
 
-        if (!autodraw.Auth.IsLoggedIn) 
-        { 
+        ed.WriteMessage($"\nLogged in: {autodraw.Auth.IsLoggedIn}...");
+
+        if (!autodraw.Auth.IsLoggedIn)
+        {
              ed.WriteMessage("\nPlease login first (ADLOGIN)."); 
-             return; 
+             return;
         }
 
         try
