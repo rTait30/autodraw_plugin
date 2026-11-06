@@ -70,6 +70,9 @@ public class OperationCommands
             ObjectId[]? sent = picked != null && picked.NeedsNothingDrawn
                 ? Array.Empty<ObjectId>()
                 : SelectToSend(ed, db);
+
+            //ObjectId[]? sent = SelectToSend(ed, db);
+
             if (sent == null) { ed.WriteMessage("\nCancelled."); return; }
 
             using (doc.LockDocument())
