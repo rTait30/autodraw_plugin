@@ -39,7 +39,7 @@ namespace autodraw_plugin.Commands;
 /// </summary>
 public class OperationCommands
 {
-    [CommandMethod("ADDO")]
+    [CommandMethod("ADOP")]
     public async void RunOperation()
     {
         Document doc = Application.DocumentManager.MdiActiveDocument;
