@@ -89,14 +89,25 @@ public static class ApiService
     /// exceeds roll width" - arrive as 400 with a message worth reading, so
     /// this must not throw on them.
     /// </summary>
-    public static async Task<HttpResponseMessage> PostDxf(
+    public static Task<HttpResponseMessage> PostDxf(
         string endpoint, string dxfPath, IDictionary<string, string> fields)
+        => PostDxfFiles(endpoint, new Dictionary<string, string> { ["drawing"] = dxfPath }, fields);
+
+    /// <summary>
+    /// Several DXFs in one request, each under its own field name - `drawing`,
+    /// or `drawing_&lt;item&gt;` for what was selected as one item.
+    /// </summary>
+    public static async Task<HttpResponseMessage> PostDxfFiles(
+        string endpoint, IDictionary<string, string> files, IDictionary<string, string> fields)
     {
         var form = new MultipartFormDataContent();
 
-        var file = new ByteArrayContent(File.ReadAllBytes(dxfPath));
-        file.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-        form.Add(file, "drawing", Path.GetFileName(dxfPath));
+        foreach (var pair in files)
+        {
+            var file = new ByteArrayContent(File.ReadAllBytes(pair.Value));
+            file.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+            form.Add(file, pair.Key, Path.GetFileName(pair.Value));
+        }
 
         if (fields != null)
         {

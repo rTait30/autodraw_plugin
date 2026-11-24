@@ -58,6 +58,7 @@ public class OperationCommands
         }
 
         string path = Path.Combine(Path.GetTempPath(), $"autodraw_op_{Guid.NewGuid():N}.dxf");
+        Dictionary<int, string>? itemPaths = null;
         try
         {
             OperationCatalogueDTO catalogue = await OperationService.Catalogue();
@@ -67,11 +68,14 @@ public class OperationCommands
             // One that needs nothing drawn - it draws a job from its data
             // (ADDODATA) - is sent an empty drawing without asking.
             OperationDTO? picked = catalogue.Operations.Find(o => o.Name == chosen || o.Id == chosen);
+            
+            /*
             ObjectId[]? sent = picked != null && picked.NeedsNothingDrawn
                 ? Array.Empty<ObjectId>()
                 : SelectToSend(ed, db);
+            */
 
-            //ObjectId[]? sent = SelectToSend(ed, db);
+            ObjectId[]? sent = SelectToSend(ed, db);
 
             if (sent == null) { ed.WriteMessage("\nCancelled."); return; }
 
@@ -84,61 +88,9 @@ public class OperationCommands
             }
             ed.WriteMessage($"\nSending {sent.Length} entities to {chosen}...");
 
-            // The server keeps nothing between calls, so each answer goes up
-            // with the drawing again until it has all it asked for.
-            var inputs = new JObject();
-            int floor = PieceGroupService.HighestObject(db);
-            OperationResultDTO result = await OperationService.Run(chosen, path, inputs, floor);
-            while (result.Error == "needs_input" && result.Inputs != null)
-            {
-                SayStep(ed, result);
-                if (!Ask(ed, result.Inputs, inputs)) { ed.WriteMessage("\nCancelled."); return; }
-                result = await OperationService.Run(chosen, path, inputs, floor);
-            }
-
-            foreach (string line in result.Interpreted ?? new List<string>())
-                ed.WriteMessage("\n  " + line);
-
-            if (!string.IsNullOrEmpty(result.Error))
-            {
-                SayStep(ed, result);
-                ed.WriteMessage($"\nStopped: {result.Message ?? result.Error}");
-                return;
-            }
-            SayRan(ed, result);
-
-            bool replacing = !string.Equals(PluginSettings.Current.Layout, "Stack",
-                                            StringComparison.OrdinalIgnoreCase);
-            int erased = 0, imported;
-            using (doc.LockDocument())
-            {
-                if (replacing)
-                {
-                    using (Transaction tr = db.TransactionManager.StartTransaction())
-                    {
-                        erased = OperationService.Erase(tr, sent);
-                        tr.Commit();
-                    }
-                }
-
-                imported = DxfTransferService.ImportBase64(db, result.Drawing ?? "");
-
-                // Cloned in with new handles, so the pieces need their groups
-                // made again - see PieceGroupService.
-                using (Transaction tr = db.TransactionManager.StartTransaction())
-                {
-                    PieceGroupService.Rebuild(tr, db);
-                    tr.Commit();
-                }
-            }
-            ed.Regen();
-
-            if (!string.IsNullOrWhiteSpace(result.Notes)) ed.WriteMessage("\n" + result.Notes);
-            foreach (string warning in result.Warnings ?? new List<string>())
-                ed.WriteMessage("\nWarning: " + warning);
-            ed.WriteMessage(replacing
-                ? $"\nReplaced {erased} with {imported}."
-                : $"\nDrew {imported} beside what was sent.");
+            // A new run: whatever was waiting for review is given up.
+            OperationService.Paused = null;
+            itemPaths = await SendAndLayIn(doc, chosen, sent, path, new JObject(), 1, null);
         }
         catch (Exception ex)
         {
@@ -147,7 +99,230 @@ public class OperationCommands
         finally
         {
             try { File.Delete(path); } catch (IOException) { }
+            foreach (string part in itemPaths?.Values ?? Enumerable.Empty<string>())
+            {
+                try { File.Delete(part); } catch (IOException) { }
+            }
         }
+    }
+
+    /// <summary>
+    /// Go on with the free run that stopped for review: what is selected now -
+    /// the drawing as the designer changed it - goes back, and the recipe runs
+    /// on from the step after the one reviewed. Refused there, the run is still
+    /// waiting at the same place, to be changed and continued again.
+    /// </summary>
+    [CommandMethod("ADOPCONTINUE")]
+    public async void ContinueOperation()
+    {
+        Document doc = Application.DocumentManager.MdiActiveDocument;
+        Editor ed = doc.Editor;
+        Database db = doc.Database;
+
+        if (!autodraw.Auth.IsLoggedIn)
+        {
+            ed.WriteMessage("\nPlease login first (ADLOGIN).");
+            return;
+        }
+        PausedRun? paused = OperationService.Paused;
+        if (paused == null)
+        {
+            ed.WriteMessage("\nNo run is waiting for review.");
+            return;
+        }
+
+        string path = Path.Combine(Path.GetTempPath(), $"autodraw_op_{Guid.NewGuid():N}.dxf");
+        Dictionary<int, string>? itemPaths = null;
+        try
+        {
+            ObjectId[]? sent = SelectToSend(ed, db);
+            if (sent == null) { ed.WriteMessage("\nCancelled."); return; }
+            using (doc.LockDocument())
+            {
+                OperationService.Export(db, sent.Length > 0 ? new ObjectIdCollection(sent)
+                                                            : new ObjectIdCollection(), path);
+            }
+            ed.WriteMessage($"\nSending {sent.Length} entities to go on from step {paused.Next}...");
+            itemPaths = await SendAndLayIn(doc, paused.Name, sent, path, paused.Inputs,
+                                           paused.Next, paused.Facts);
+        }
+        catch (Exception ex)
+        {
+            ed.WriteMessage($"\nError: {ex.Message}");
+        }
+        finally
+        {
+            try { File.Delete(path); } catch (IOException) { }
+            foreach (string part in itemPaths?.Values ?? Enumerable.Empty<string>())
+            {
+                try { File.Delete(part); } catch (IOException) { }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Send what was exported to `path` and lay the result in: answering what
+    /// the server asks, selecting each item where it asks that, then replacing
+    /// what was sent or drawing beside it. A recipe that stops for review is
+    /// kept as `OperationService.Paused`. Returns the item drawings made, for
+    /// the caller to delete.
+    /// </summary>
+    private static async Task<Dictionary<int, string>?> SendAndLayIn(
+        Document doc, string chosen, ObjectId[] sent, string path, JObject inputs, int start,
+        JToken? facts)
+    {
+        Editor ed = doc.Editor;
+        Database db = doc.Database;
+        Dictionary<int, string>? itemPaths = null;
+        // The server keeps nothing between calls, so each answer goes up
+        // with the drawing again until it has all it asked for. Where the
+        // job has several items and nothing sent says which is which, each
+        // item is selected - or left out - and goes up as its own drawing.
+        int floor = PieceGroupService.HighestObject(db);
+        OperationResultDTO result = await OperationService.Run(chosen, path, inputs, floor,
+                                                               null, start, facts);
+        while (true)
+        {
+            if (result.Error == "needs_input" && result.Inputs != null)
+            {
+                SayStep(ed, result);
+                if (!Ask(ed, result.Inputs, inputs)) { ed.WriteMessage("\nCancelled."); return itemPaths; }
+            }
+            else if (result.Error == "needs_selection" && result.Items != null && itemPaths == null)
+            {
+                SayStep(ed, result);
+                itemPaths = SelectEachItem(doc, result.Items, out ObjectId[] selected);
+                if (itemPaths == null) { ed.WriteMessage("\nCancelled."); return itemPaths; }
+                sent = selected;
+            }
+            else break;
+            result = await OperationService.Run(chosen, path, inputs, floor, itemPaths, start, facts);
+        }
+
+        foreach (string line in result.Interpreted ?? new List<string>())
+            ed.WriteMessage("\n  " + line);
+
+        if (!string.IsNullOrEmpty(result.Error))
+        {
+            SayStep(ed, result);
+            ed.WriteMessage($"\nStopped: {result.Message ?? result.Error}");
+            // Going on from a review, the check after it found the change
+            // wrong: the run waits where it was, to be changed again.
+            if (OperationService.Paused != null)
+                ed.WriteMessage($"\nChange the drawing and ADOPCONTINUE to go on from step {OperationService.Paused.Next} again.");
+            return itemPaths;
+        }
+        SayRan(ed, result);
+
+        bool replacing = !string.Equals(PluginSettings.Current.Layout, "Stack",
+                                        StringComparison.OrdinalIgnoreCase);
+        int erased = 0, imported;
+        using (doc.LockDocument())
+        {
+            if (replacing)
+            {
+                using (Transaction tr = db.TransactionManager.StartTransaction())
+                {
+                    erased = OperationService.Erase(tr, sent);
+                    tr.Commit();
+                }
+            }
+
+            imported = DxfTransferService.ImportBase64(db, result.Drawing ?? "");
+
+            // Cloned in with new handles, so the pieces need their groups
+            // made again - see PieceGroupService.
+            using (Transaction tr = db.TransactionManager.StartTransaction())
+            {
+                PieceGroupService.Rebuild(tr, db);
+                tr.Commit();
+            }
+        }
+        ed.Regen();
+
+        if (!string.IsNullOrWhiteSpace(result.Notes)) ed.WriteMessage("\n" + result.Notes);
+        foreach (string warning in result.Warnings ?? new List<string>())
+            ed.WriteMessage("\nWarning: " + warning);
+        ed.WriteMessage(replacing
+            ? $"\nReplaced {erased} with {imported}."
+            : $"\nDrew {imported} beside what was sent.");
+
+        // Stopped for review: held, with all it needs to go on, until the
+        // designer has looked and runs ADOPCONTINUE.
+        if (result.Paused != null)
+        {
+            OperationService.Paused = new PausedRun
+            {
+                Name = chosen, Inputs = inputs, Next = result.Paused.Next, Facts = result.Facts,
+            };
+            ed.WriteMessage($"\nPaused after step {result.Paused.Step} of {result.Paused.Steps}: "
+                            + (result.Paused.Message ?? "review the drawing."));
+            ed.WriteMessage("\nChange the drawing if need be, then ADOPCONTINUE to go on.");
+        }
+        else
+        {
+            OperationService.Paused = null;
+        }
+        return itemPaths;
+    }
+
+    /// <summary>
+    /// Select the geometry of each of the job's items in turn, Enter to leave an
+    /// item out, each exported to a DXF of its own. Null when cancelled or when
+    /// nothing at all was selected. `picked` is everything selected, which the
+    /// result replaces.
+    /// </summary>
+    private static Dictionary<int, string>? SelectEachItem(Document doc,
+                                                           List<SelectionItemDTO> items,
+                                                           out ObjectId[] picked)
+    {
+        Editor ed = doc.Editor;
+        Database db = doc.Database;
+        var paths = new Dictionary<int, string>();
+        var all = new List<ObjectId>();
+        picked = Array.Empty<ObjectId>();
+        var decoration = new HashSet<string>(AutoDrawVisualizer.DecorationLayers,
+                                             StringComparer.OrdinalIgnoreCase);
+        foreach (SelectionItemDTO item in items)
+        {
+            PromptSelectionResult chosen = ed.GetSelection(new PromptSelectionOptions
+            {
+                MessageForAdding = $"\nSelect {item.Label ?? $"item {item.Item + 1}"}, or Enter to leave it out: ",
+            });
+            if (chosen.Status == PromptStatus.Error) continue;   // Enter: left out
+            if (chosen.Status != PromptStatus.OK)
+            {
+                foreach (string made in paths.Values) { try { File.Delete(made); } catch (IOException) { } }
+                return null;
+            }
+
+            var kept = new List<ObjectId>();
+            using (Transaction tr = db.TransactionManager.StartTransaction())
+            {
+                foreach (ObjectId id in chosen.Value.GetObjectIds())
+                {
+                    if (tr.GetObject(id, OpenMode.ForRead) is Entity ent && !decoration.Contains(ent.Layer))
+                        kept.Add(id);
+                }
+                tr.Commit();
+            }
+            if (kept.Count == 0) continue;
+
+            string path = Path.Combine(Path.GetTempPath(), $"autodraw_item_{Guid.NewGuid():N}.dxf");
+            using (doc.LockDocument())
+            {
+                OperationService.Export(db, new ObjectIdCollection(kept.ToArray()), path);
+            }
+            paths[item.Item] = path;
+            all.AddRange(kept);
+        }
+        if (paths.Count == 0)
+        {
+            ed.WriteMessage("\nNothing was selected for any item.");
+            return null;
+        }
+        picked = all.ToArray();
+        return paths;
     }
 
     /// <summary>Choose the project ADDO runs on, and lay its drawing in. Enter for none.</summary>

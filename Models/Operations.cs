@@ -174,4 +174,52 @@ public class OperationResultDTO
     /// <summary>The operations that ran, in order.</summary>
     [JsonProperty("ran")]
     public List<string>? Ran { get; set; }
+
+    /// <summary>What the run had settled when it ended, sent back with a run that goes on from it.</summary>
+    [JsonProperty("facts")]
+    public JToken? Facts { get; set; }
+
+    /// <summary>Where a recipe stopped for a person to review what a step drew; null when it ran through.</summary>
+    [JsonProperty("paused")]
+    public PausedDTO? Paused { get; set; }
+
+    /// <summary>
+    /// With `needs_selection`: the job's items, each to be selected - or left
+    /// out - and sent back as that item's own drawing.
+    /// </summary>
+    [JsonProperty("items")]
+    public List<SelectionItemDTO>? Items { get; set; }
+}
+
+/// <summary>
+/// A recipe stopped after a step marked for review: the step (from one) of how
+/// many, what to say, and `next`, the step to go on from once the drawing has
+/// been looked at and changed.
+/// </summary>
+public class PausedDTO
+{
+    [JsonProperty("step")]
+    public int Step { get; set; }
+
+    [JsonProperty("steps")]
+    public int Steps { get; set; }
+
+    [JsonProperty("next")]
+    public int Next { get; set; }
+
+    [JsonProperty("operation")]
+    public string? Operation { get; set; }
+
+    [JsonProperty("message")]
+    public string? Message { get; set; }
+}
+
+/// <summary>One item a designer is asked to select the geometry of.</summary>
+public class SelectionItemDTO
+{
+    [JsonProperty("item")]
+    public int Item { get; set; }
+
+    [JsonProperty("label")]
+    public string? Label { get; set; }
 }

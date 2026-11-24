@@ -29,11 +29,22 @@ public static class OperationService
     /// still to ask for, a role the drawing lacks - comes back as a 422 worth
     /// reading, so the status is not thrown on.
     /// </summary>
-    public static async Task<OperationResultDTO> Run(string id, string dxfPath, JObject inputs,
-                                                     int objectFloor)
+    /// <summary>
+    /// Run an operation free on a drawing. With `itemPaths`, what was selected
+    /// for each item goes as that item's own drawing (`drawing_&lt;item&gt;`)
+    /// in place of `dxfPath`, which may then be null. `start` and `facts` go on
+    /// with a recipe from where it stopped for review (`Paused`).
+    /// </summary>
+    public static async Task<OperationResultDTO> Run(string id, string? dxfPath, JObject inputs,
+                                                     int objectFloor,
+                                                     IDictionary<int, string>? itemPaths = null,
+                                                     int start = 1, JToken? facts = null)
     {
         var fields = new Dictionary<string, string>
         {
+            // A designer is here to look, so a recipe stops after each step
+            // it marks for review (`suggest_nest?`) instead of running on.
+            ["pause"] = "reviews",
             // Pieces come back numbered above every piece already in the
             // drawing, so none is grouped with one it is not part of.
             ["object_floor"] = objectFloor.ToString(),
@@ -44,11 +55,18 @@ public static class OperationService
             ["direction"] = PluginSettings.Current.Direction.ToLowerInvariant(),
         };
         if (DataProjectId.HasValue) fields["project_id"] = DataProjectId.Value.ToString();
+        if (start > 1) fields["start"] = start.ToString();
+        if (facts != null && facts.Type != JTokenType.Null) fields["facts"] = facts.ToString(Formatting.None);
         // The states along the way, as deep as the designer asked to see them.
         int depth = PluginSettings.Current.StepsDepth;
         if (depth != 0) fields["steps_depth"] = depth < 0 ? "all" : depth.ToString();
-        HttpResponseMessage response = await ApiService.PostDxf(
-            $"/operations/{Uri.EscapeDataString(id)}/run", dxfPath, fields);
+        var files = new Dictionary<string, string>();
+        if (itemPaths != null)
+            foreach (var pair in itemPaths) files[$"drawing_{pair.Key}"] = pair.Value;
+        else if (dxfPath != null)
+            files["drawing"] = dxfPath;
+        HttpResponseMessage response = await ApiService.PostDxfFiles(
+            $"/operations/{Uri.EscapeDataString(id)}/run", files, fields);
         string body = await response.Content.ReadAsStringAsync();
         try
         {
@@ -69,6 +87,14 @@ public static class OperationService
             Message = $"HTTP {(int)response.StatusCode} ({response.ReasonPhrase}) - the response was not JSON.",
         };
     }
+
+    /// <summary>
+    /// The free run stopped for review, which ADOPCONTINUE goes on with; null
+    /// when none is waiting. The server keeps nothing, so this holds what it
+    /// needs again: the name run, the answers given, where to go on from and
+    /// the facts settled so far.
+    /// </summary>
+    public static PausedRun? Paused { get; set; }
 
     /// <summary>
     /// The project ADDO runs on, when one is chosen (ADDOPROJECT); a free run
@@ -235,4 +261,13 @@ public static class OperationService
         }
         return erased;
     }
+}
+
+/// <summary>A free run stopped for review, as ADOPCONTINUE sends it on.</summary>
+public class PausedRun
+{
+    public string Name { get; init; } = "";
+    public JObject Inputs { get; init; } = new();
+    public int Next { get; init; }
+    public JToken? Facts { get; init; }
 }
