@@ -107,6 +107,78 @@ public class OperationCommands
     }
 
     /// <summary>
+    /// A free run of a recipe picked up part way: the recipe chosen from the
+    /// recipes alone, then the step to start at from its operations as they run.
+    /// What is selected is sent as the drawing that step starts from; the steps
+    /// before it are not run. Otherwise as ADOP - it stops for review, and
+    /// ADOPCONTINUE goes on from there. Free runs only.
+    /// </summary>
+    [CommandMethod("ADOPPART")]
+    public async void RunPartOfRecipe()
+    {
+        Document doc = Application.DocumentManager.MdiActiveDocument;
+        Editor ed = doc.Editor;
+        Database db = doc.Database;
+
+        if (!autodraw.Auth.IsLoggedIn)
+        {
+            ed.WriteMessage("\nPlease login first (ADLOGIN).");
+            return;
+        }
+        if (OperationService.ProjectId.HasValue)
+        {
+            ed.WriteMessage("\nADOPPART is for free runs; choose no project with ADDOPROJECT first.");
+            return;
+        }
+
+        string path = Path.Combine(Path.GetTempPath(), $"autodraw_op_{Guid.NewGuid():N}.dxf");
+        Dictionary<int, string>? itemPaths = null;
+        try
+        {
+            OperationCatalogueDTO catalogue = await OperationService.Catalogue();
+            List<OperationDTO> recipes = catalogue.Operations
+                .Where(o => o.Kind == "recipe" && o.Broken == null && o.Operations.Count > 0)
+                .ToList();
+            if (recipes.Count == 0) { ed.WriteMessage("\nThe server has no recipes."); return; }
+            for (int i = 0; i < recipes.Count; i++)
+                ed.WriteMessage($"\n  {i + 1}. {recipes[i].Id}");
+            int? which = PickNumber(ed, "\nWhich recipe: ", recipes.Count, null);
+            if (which == null) { ed.WriteMessage("\nCancelled."); return; }
+            OperationDTO recipe = recipes[which.Value - 1];
+
+            for (int i = 0; i < recipe.Operations.Count; i++)
+                ed.WriteMessage($"\n  {i + 1}. {recipe.Operations[i]}");
+            int? start = PickNumber(ed, "\nStart at step: ", recipe.Operations.Count, null);
+            if (start == null) { ed.WriteMessage("\nCancelled."); return; }
+
+            ObjectId[]? sent = SelectToSend(ed, db);
+            if (sent == null) { ed.WriteMessage("\nCancelled."); return; }
+            using (doc.LockDocument())
+            {
+                OperationService.Export(db, sent.Length > 0 ? new ObjectIdCollection(sent)
+                                                            : new ObjectIdCollection(), path);
+            }
+            ed.WriteMessage($"\nSending {sent.Length} entities to {recipe.Name} from step {start}...");
+
+            OperationService.Paused = null;
+            itemPaths = await SendAndLayIn(doc, recipe.Name, sent, path, new JObject(),
+                                           start.Value, null);
+        }
+        catch (Exception ex)
+        {
+            ed.WriteMessage($"\nError: {ex.Message}");
+        }
+        finally
+        {
+            try { File.Delete(path); } catch (IOException) { }
+            foreach (string part in itemPaths?.Values ?? Enumerable.Empty<string>())
+            {
+                try { File.Delete(part); } catch (IOException) { }
+            }
+        }
+    }
+
+    /// <summary>
     /// Go on with the free run that stopped for review: what is selected now -
     /// the drawing as the designer changed it - goes back, and the recipe runs
     /// on from the step after the one reviewed. Refused there, the run is still

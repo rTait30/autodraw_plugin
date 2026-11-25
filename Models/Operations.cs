@@ -38,6 +38,10 @@ public class OperationDTO
     [JsonProperty("broken")]
     public string? Broken { get; set; }
 
+    /// <summary>A recipe's operations in the order they run - what a run's `start` counts.</summary>
+    [JsonProperty("operations")]
+    public List<string> Operations { get; set; } = new();
+
     /// <summary>Whether it runs on nothing drawn at all - one that draws a job from its data.</summary>
     public bool NeedsNothingDrawn => Needs?["roles"] is not JArray roles || roles.Count == 0;
 }
