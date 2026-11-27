@@ -214,7 +214,17 @@ public class RunCommands
                     }
                 }
 
+                // The result comes back where it was made. Stacking, this side
+                // moves it - and any states along the way, as pictures - beside
+                // what was sent, so it is found among what is new.
+                var before = new HashSet<ObjectId>(Prompts.AllOfModelspace(db));
                 imported = DxfTransferService.ImportBase64(db, result.Drawing ?? "");
+                if (!replacing)
+                {
+                    List<ObjectId> made = Prompts.AllOfModelspace(db).Where(id => !before.Contains(id)).ToList();
+                    OperationGridService.LayBeside(doc, sent, result.States, made,
+                                                   PluginSettings.Current.Direction);
+                }
 
                 // Cloned in with new handles, so the pieces need their groups
                 // made again - see PieceGroupService.

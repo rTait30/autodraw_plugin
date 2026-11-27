@@ -50,17 +50,22 @@ public static class OperationService
             // drawing, so none is grouped with one it is not part of.
             ["object_floor"] = objectFloor.ToString(),
             ["inputs"] = inputs.ToString(Formatting.None),
-            // The designer's layout, as every automation call carries it:
-            // replace hands the drawing back where it was, stack beside it.
-            ["layout"] = PluginSettings.Current.Layout.ToLowerInvariant(),
+            // Back where it was made: this side places everything, beside
+            // what was sent when stacking (OperationGridService.LayBeside).
+            ["layout"] = "replace",
             ["direction"] = PluginSettings.Current.Direction.ToLowerInvariant(),
         };
         if (Job.AnswersFrom.HasValue) fields["project_id"] = Job.AnswersFrom.Value.ToString();
         if (start > 1) fields["start"] = start.ToString();
         if (facts != null && facts.Type != JTokenType.Null) fields["facts"] = facts.ToString(Formatting.None);
-        // The states along the way, as deep as the designer asked to see them.
+        // The states along the way, as deep as the designer asked to see them
+        // when stacking, handed out apart (`states`) to be placed here.
         int depth = PluginSettings.Current.StepsDepth;
-        if (depth != 0) fields["steps_depth"] = depth < 0 ? "all" : depth.ToString();
+        if (depth != 0 && string.Equals(PluginSettings.Current.Layout, "Stack", StringComparison.OrdinalIgnoreCase))
+        {
+            fields["steps_depth"] = depth < 0 ? "all" : depth.ToString();
+            fields["states"] = "1";
+        }
         var files = new Dictionary<string, string>();
         if (itemPaths != null)
             foreach (var pair in itemPaths) files[$"drawing_{pair.Key}"] = pair.Value;

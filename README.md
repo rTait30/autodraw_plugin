@@ -50,7 +50,8 @@ next, e.g. `Job 124 at draw_work_points@1. shadesail waits at step 3: ADGO to go
   a lane of its own. The pictures stay on the layers they were drawn on (turn
   a layer off and it goes in the pictures too) and are never sent back.
 - **Direction** - which way stacked states and the grid run.
-- **Depth** - in Stack, how many of a free run's in-between states to draw.
+- **Depth** - in Stack, how many of a free run's in-between states to draw,
+  as pictures between what you selected and the result.
 
 ## Examples
 

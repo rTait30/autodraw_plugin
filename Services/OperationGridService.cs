@@ -177,6 +177,81 @@ public static class OperationGridService
         }
     }
 
+    /// <summary>
+    /// A free run stacked: what came back laid beside what was sent - to its
+    /// right, or under it - and before it, in order, a picture of each state
+    /// along the way (`states`), each captioned with the step it follows. The
+    /// server placed none of it; the caller holds the document lock.
+    /// </summary>
+    public static void LayBeside(Document doc, ObjectId[] sent, List<OperationStateDTO>? states,
+                                 List<ObjectId> result, string direction)
+    {
+        Database db = doc.Database;
+        bool down = string.Equals(direction, "Down", StringComparison.OrdinalIgnoreCase);
+
+        // Free states have no id to be known by, so each picture is its own.
+        var pictures = new List<(string name, string? caption)>();
+        foreach (OperationStateDTO state in states ?? new List<OperationStateDTO>())
+        {
+            if (string.IsNullOrEmpty(state.Drawing)) continue;
+            string name = Prefix + "F" + Guid.NewGuid().ToString("N");
+            GridService.DefineBlock(db, name, state.Drawing);
+            Unstamp(db, name);
+            pictures.Add((name, state.Caption));
+        }
+
+        using (Transaction tr = db.TransactionManager.StartTransaction())
+        {
+            AutoDrawVisualizer.EnsureLayer(tr, db, AutoDrawVisualizer.CaptionLayer);
+            BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+            BlockTableRecord ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
+
+            Extents3d? Union(IEnumerable<ObjectId> ids) => ids
+                .Select(id => (tr.GetObject(id, OpenMode.ForRead) as Entity)?.Bounds)
+                .Aggregate((Extents3d?)null, Grow);
+
+            Extents3d? last = Union(sent);
+            Extents3d? mine = Union(result);
+            var sizes = new[] { last, mine }.Concat(pictures.Select(p =>
+                    Measure(tr, (BlockTableRecord)tr.GetObject(bt[p.name], OpenMode.ForRead))))
+                .Where(box => box.HasValue).Select(box => box!.Value).ToList();
+            if (sizes.Count == 0) { tr.Commit(); return; }
+            double size = sizes.Max(box => Math.Max(box.MaxPoint.X - box.MinPoint.X, box.MaxPoint.Y - box.MinPoint.Y));
+            double gap = Math.Max(size * 0.15, 1.0);
+            double text = Math.Max(size * 0.03, 1.0);
+
+            // Clear of the last thing placed, one way only, as a hand drawing
+            // keeps each state beside the one before.
+            Vector3d Beside(Extents3d box) => last is not Extents3d after
+                ? new Vector3d(0, 0, 0)
+                : down ? new Vector3d(0, after.MinPoint.Y - gap - box.MaxPoint.Y, 0)
+                       : new Vector3d(after.MaxPoint.X + gap - box.MinPoint.X, 0, 0);
+
+            foreach (var (name, caption) in pictures)
+            {
+                Extents3d? box = Measure(tr, (BlockTableRecord)tr.GetObject(bt[name], OpenMode.ForRead));
+                if (!box.HasValue) continue;
+                Vector3d move = Beside(box.Value);
+                var picture = new BlockReference(Point3d.Origin + move, bt[name]) { Layer = "0" };
+                ms.AppendEntity(picture);
+                tr.AddNewlyCreatedDBObject(picture, true);
+                var placed = new Extents3d(box.Value.MinPoint + move, box.Value.MaxPoint + move);
+                if (!string.IsNullOrEmpty(caption))
+                    Caption(tr, ms, new Point3d(placed.MinPoint.X, placed.MaxPoint.Y + text, 0), $"after {caption}", text);
+                last = placed;
+            }
+
+            if (mine.HasValue)
+            {
+                Vector3d move = Beside(mine.Value);
+                Matrix3d shift = Matrix3d.Displacement(move);
+                foreach (ObjectId id in result)
+                    ((Entity)tr.GetObject(id, OpenMode.ForWrite)).TransformBy(shift);
+            }
+            tr.Commit();
+        }
+    }
+
     /// <summary>Erase every picture placed; the definitions stay, a row never changing.</summary>
     public static void Clear(Transaction tr, Database db)
     {

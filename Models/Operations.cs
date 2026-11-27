@@ -267,6 +267,10 @@ public class OperationStateDTO
     [JsonProperty("partial")]
     public bool Partial { get; set; }
 
+    /// <summary>On a free run's states: the step it is the drawing after.</summary>
+    [JsonProperty("caption")]
+    public string? Caption { get; set; }
+
     /// <summary>What this row drew and nothing else, base64 DXF, where it was made.</summary>
     [JsonProperty("drawing")]
     public string? Drawing { get; set; }
