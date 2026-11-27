@@ -55,6 +55,21 @@ public class PluginSettings
     /// </summary>
     public bool Descriptions { get; set; }
 
+    /// <summary>
+    /// A recipe run with ADOP stops after every operation (`pause=each`), for
+    /// the designer to look and ADOPCONTINUE, instead of only after a step
+    /// marked for review (`pause=reviews`). Free runs and project runs alike.
+    /// </summary>
+    public bool StepThrough { get; set; }
+
+    /// <summary>
+    /// A project's operation history is laid out as a grid of pictures,
+    /// operations one way and the job's items the other, beside the drawing
+    /// in hand - instead of following Layout. Project runs only: a free run
+    /// keeps no history to lay out.
+    /// </summary>
+    public bool OperationsGrid { get; set; }
+
     private static readonly string FilePath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "autodraw", "settings.json");

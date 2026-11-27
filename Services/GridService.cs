@@ -30,7 +30,7 @@ public static class GridService
     /// <summary>The pictures of earlier states, one block reference each.</summary>
     public const string HistoryLayer = "AUTODRAW_HISTORY";
 
-    private const string SnapshotPrefix = "ADSNAP_";
+    internal const string SnapshotPrefix = "ADSNAP_";
 
     /// <summary>The grid last drawn, for a playing job to follow.</summary>
     public static GridDTO? Last { get; private set; }
@@ -278,7 +278,7 @@ public static class GridService
         return count;
     }
 
-    private static bool HasBlock(Database db, string name)
+    internal static bool HasBlock(Database db, string name)
     {
         using (Transaction tr = db.TransactionManager.StartOpenCloseTransaction())
         {
@@ -290,7 +290,7 @@ public static class GridService
     }
 
     /// <summary>Make a block of one state's drawing, as the server laid it out.</summary>
-    private static void DefineBlock(Database db, string name, string base64)
+    internal static void DefineBlock(Database db, string name, string base64)
     {
         string path = Path.Combine(Path.GetTempPath(), $"autodraw_snap_{Guid.NewGuid():N}.dxf");
         File.WriteAllBytes(path, Convert.FromBase64String(base64));

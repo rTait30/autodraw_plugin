@@ -202,6 +202,25 @@ public class OperationCommands
             ed.WriteMessage("\nNo run is waiting for review.");
             return;
         }
+        if (paused.ProjectId.HasValue)
+        {
+            // A project's run goes on from the drawing as it is now, the
+            // whole of it, from the state it was laid in from.
+            if (paused.ProjectId != OperationService.ProjectId)
+            {
+                ed.WriteMessage($"\nThe run waiting is on project {paused.ProjectId}; choose it with ADDOPROJECT.");
+                return;
+            }
+            try
+            {
+                await SendOnProject(doc, paused.ProjectId.Value, paused.Name, paused.Inputs, paused.Next);
+            }
+            catch (Exception ex)
+            {
+                ed.WriteMessage($"\nError: {ex.Message}");
+            }
+            return;
+        }
 
         string path = Path.Combine(Path.GetTempPath(), $"autodraw_op_{Guid.NewGuid():N}.dxf");
         Dictionary<int, string>? itemPaths = null;
@@ -319,22 +338,7 @@ public class OperationCommands
             ? $"\nReplaced {erased} with {imported}."
             : $"\nDrew {imported} beside what was sent.");
 
-        // Stopped for review: held, with all it needs to go on, until the
-        // designer has looked and runs ADOPCONTINUE.
-        if (result.Paused != null)
-        {
-            OperationService.Paused = new PausedRun
-            {
-                Name = chosen, Inputs = inputs, Next = result.Paused.Next, Facts = result.Facts,
-            };
-            ed.WriteMessage($"\nPaused after step {result.Paused.Step} of {result.Paused.Steps}: "
-                            + (result.Paused.Message ?? "review the drawing."));
-            ed.WriteMessage("\nChange the drawing if need be, then ADOPCONTINUE to go on.");
-        }
-        else
-        {
-            OperationService.Paused = null;
-        }
+        HoldIfPaused(ed, result, chosen, inputs, null);
         return itemPaths;
     }
 
@@ -425,7 +429,11 @@ public class OperationCommands
         {
             OperationResultDTO drawn = await OperationService.ProjectDrawing(projectId);
             if (!string.IsNullOrEmpty(drawn.Error)) { ed.WriteMessage($"\n{drawn.Message ?? drawn.Error}"); return; }
+            // A run waiting on another project cannot go on from this one's drawing.
+            if (OperationService.Paused?.ProjectId is int waiting && waiting != projectId)
+                OperationService.Paused = null;
             OperationService.ProjectId = projectId;
+            OperationService.Items = new List<int>();
             LayIn(doc, drawn);
             ed.WriteMessage($"\nADDO now runs on project {projectId}.");
         }
@@ -580,6 +588,193 @@ public class OperationCommands
         foreach (string warning in recipe.Warnings) ed.WriteMessage("\n  Warning: " + warning);
     }
 
+    /// <summary>
+    /// Write a note in the chosen project's job log, beside what the operations
+    /// said: against the drawing it is at now, for one item or the whole job.
+    /// </summary>
+    [CommandMethod("ADOPNOTE")]
+    public async void WriteNote()
+    {
+        Editor ed = Application.DocumentManager.MdiActiveDocument.Editor;
+        if (!autodraw.Auth.IsLoggedIn)
+        {
+            ed.WriteMessage("\nPlease login first (ADLOGIN).");
+            return;
+        }
+        if (!OperationService.ProjectId.HasValue)
+        {
+            ed.WriteMessage("\nNo project chosen (ADDOPROJECT): a note goes in a project's job log.");
+            return;
+        }
+        PromptResult typed = ed.GetString(new PromptStringOptions("\nNote: ") { AllowSpaces = true });
+        if (typed.Status != PromptStatus.OK || string.IsNullOrWhiteSpace(typed.StringResult)) return;
+
+        // The items the history has drawn are offered; any item's id is taken.
+        List<int> items = OperationService.Items;
+        var which = new PromptIntegerOptions(items.Count > 0
+            ? $"\nFor item ({string.Join(", ", items)}), or Enter for the whole job: "
+            : "\nFor item id, or Enter for the whole job: ")
+        {
+            AllowNone = true,
+            AllowNegative = false,
+            AllowZero = false,
+        };
+        PromptIntegerResult item = ed.GetInteger(which);
+        if (item.Status != PromptStatus.OK && item.Status != PromptStatus.None) return;
+        int? itemId = item.Status == PromptStatus.OK ? item.Value : null;
+
+        try
+        {
+            RunLogDTO log = await OperationService.AddNote(
+                OperationService.ProjectId.Value, typed.StringResult.Trim(), itemId);
+            if (!string.IsNullOrEmpty(log.Error)) { ed.WriteMessage($"\nNot written: {log.Message ?? log.Error}"); return; }
+            ed.WriteMessage(itemId.HasValue ? $"\nNoted for item {itemId}." : "\nNoted for the job.");
+        }
+        catch (Exception ex)
+        {
+            ed.WriteMessage($"\nError: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// The chosen project's job log: each operation along its history, oldest
+    /// first, with what it said when it ran and what people wrote.
+    /// </summary>
+    [CommandMethod("ADOPLOG")]
+    public async void ShowLog()
+    {
+        Editor ed = Application.DocumentManager.MdiActiveDocument.Editor;
+        if (!autodraw.Auth.IsLoggedIn)
+        {
+            ed.WriteMessage("\nPlease login first (ADLOGIN).");
+            return;
+        }
+        if (!OperationService.ProjectId.HasValue)
+        {
+            ed.WriteMessage("\nNo project chosen (ADDOPROJECT).");
+            return;
+        }
+        try
+        {
+            RunLogDTO log = await OperationService.Log(OperationService.ProjectId.Value);
+            if (!string.IsNullOrEmpty(log.Error)) { ed.WriteMessage($"\n{log.Message ?? log.Error}"); return; }
+            if (log.Log.Count == 0) { ed.WriteMessage("\nNothing in the log yet."); return; }
+            ed.WriteMessage($"\nJob log, project {OperationService.ProjectId}:");
+            int number = 0;
+            foreach (RunLogEntryDTO entry in log.Log)
+            {
+                if (entry.ArtifactId == null && entry.Operation == null)
+                    ed.WriteMessage("\n  Before anything was drawn:");
+                else
+                {
+                    number++;
+                    string what = entry.Operation ?? (entry.Source == "submitted" ? "changed in CAD" : entry.Source ?? "?");
+                    string recipe = entry.Recipe != null ? $" ({entry.Recipe})" : "";
+                    string items = entry.Items is { Count: > 0 } ? $", items {string.Join(", ", entry.Items)}" : "";
+                    ed.WriteMessage($"\n  {number}. {what}{recipe}{items}{When(entry.CreatedAt)}");
+                }
+                if (!string.IsNullOrWhiteSpace(entry.Notes))
+                    foreach (string line in entry.Notes.Split('\n'))
+                        ed.WriteMessage("\n       " + line.TrimEnd());
+                foreach (RunNoteDTO note in entry.Written ?? new List<RunNoteDTO>())
+                {
+                    string forItem = note.ItemId.HasValue ? $" on item {note.ItemId}" : "";
+                    ed.WriteMessage($"\n       > {note.User ?? "someone"}{forItem}{When(note.CreatedAt)}: {note.Text}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            ed.WriteMessage($"\nError: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// A server timestamp as local time, briefly; nothing when there is none.
+    /// The server writes UTC without saying so, hence assumed.
+    /// </summary>
+    private static string When(string? iso) =>
+        DateTime.TryParse(iso, System.Globalization.CultureInfo.InvariantCulture,
+                          System.Globalization.DateTimeStyles.AssumeUniversal, out DateTime at)
+            ? $" [{at:d MMM HH:mm}]"
+            : "";
+
+    /// <summary>
+    /// How ADOP runs: a recipe stopping after every operation or only at a
+    /// review, and how a project's history is laid out - Replace and Stack as
+    /// ADSETTINGS has them, or Grid, its operations by its items.
+    /// </summary>
+    [CommandMethod("ADOPTIONS")]
+    public void Options()
+    {
+        Document doc = Application.DocumentManager.MdiActiveDocument;
+        Editor ed = doc.Editor;
+        PluginSettings settings = PluginSettings.Current;
+        string laidOutAs = Layout(settings) + "/" + settings.Direction;
+
+        while (true)
+        {
+            var options = new PromptKeywordOptions(
+                $"\nRecipes stop {(settings.StepThrough ? "after every operation" : "at reviews")}, "
+                + $"history {Layout(settings)} {settings.Direction}. Change [Steps/Layout/Direction] <done>: ");
+            options.Keywords.Add("Steps");
+            options.Keywords.Add("Layout");
+            options.Keywords.Add("Direction");
+            options.AllowNone = true;
+            PromptResult picked = ed.GetKeywords(options);
+            if (picked.Status != PromptStatus.OK || string.IsNullOrEmpty(picked.StringResult)) break;
+
+            if (picked.StringResult == "Steps")
+            {
+                var which = new PromptKeywordOptions(
+                    "\nA recipe stops [Each/Reviews]: after every operation, or only at a step marked for review: ");
+                which.Keywords.Add("Each");
+                which.Keywords.Add("Reviews");
+                which.Keywords.Default = settings.StepThrough ? "Each" : "Reviews";
+                PromptResult said = ed.GetKeywords(which);
+                if (said.Status != PromptStatus.OK) continue;
+                settings.StepThrough = said.StringResult == "Each";
+            }
+            else if (picked.StringResult == "Layout")
+            {
+                var which = new PromptKeywordOptions(
+                    "\nEach state [Replace/Stack/Grid]: drawn over the last, kept beside it, "
+                    + "or the project's history by operation and item: ");
+                which.Keywords.Add("Replace");
+                which.Keywords.Add("Stack");
+                which.Keywords.Add("Grid");
+                which.Keywords.Default = Layout(settings);
+                PromptResult said = ed.GetKeywords(which);
+                if (said.Status != PromptStatus.OK) continue;
+                // Grid is the operations' own: Layout stays as the automation has it.
+                settings.OperationsGrid = said.StringResult == "Grid";
+                if (!settings.OperationsGrid) settings.Layout = said.StringResult;
+            }
+            else
+            {
+                var which = new PromptKeywordOptions("\nStates run [Right/Down]: ");
+                which.Keywords.Add("Right");
+                which.Keywords.Add("Down");
+                which.Keywords.Default = settings.Direction;
+                PromptResult said = ed.GetKeywords(which);
+                if (said.Status != PromptStatus.OK) continue;
+                settings.Direction = said.StringResult;
+            }
+            settings.Save();
+        }
+
+        // A project's drawing is laid out by the server or here as asked for,
+        // so a change is seen by asking for it again.
+        if (Layout(settings) + "/" + settings.Direction != laidOutAs
+            && OperationService.ProjectId.HasValue && OperationService.Loaded)
+        {
+            ed.WriteMessage("\nRun ADDOPROJECT to lay the project in again as set.");
+        }
+    }
+
+    private static string Layout(PluginSettings settings) =>
+        settings.OperationsGrid ? "Grid" : settings.Layout;
+
     [CommandMethod("ADDOBACK")]
     public async void StepBack() => await StepAlong(false);
 
@@ -608,20 +803,41 @@ public class OperationCommands
     }
 
     /// <summary>
-    /// Run on the project: the drawing goes back with it if it was laid in by
-    /// ADDO, the job answers what it can and anything else is asked, and the
-    /// project's new drawing replaces this one whole.
+    /// Run on the project: the operation or recipe chosen, then sent - see
+    /// SendOnProject. A new run gives up whatever was waiting for review.
     /// </summary>
     private static async Task RunOnProject(Document doc, int projectId)
+    {
+        Editor ed = doc.Editor;
+        try
+        {
+            string? chosen = ChooseOperation(ed, await OperationService.Catalogue());
+            if (chosen == null) { ed.WriteMessage("\nCancelled."); return; }
+            OperationService.Paused = null;
+            await SendOnProject(doc, projectId, chosen, new JObject(), 1);
+        }
+        catch (Exception ex)
+        {
+            ed.WriteMessage($"\nError: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Run on the project from step `start`: the drawing goes back with it if
+    /// it was laid in by ADDO, the job answers what it can and anything else
+    /// is asked, and the project's new drawing replaces this one whole. A
+    /// recipe that stops for review - or after every operation, stepping
+    /// through - is kept as `OperationService.Paused`, to go on with
+    /// ADOPCONTINUE; what ran before the stop is already saved on the project.
+    /// </summary>
+    private static async Task SendOnProject(Document doc, int projectId, string chosen,
+                                            JObject inputs, int start)
     {
         Editor ed = doc.Editor;
         Database db = doc.Database;
         string path = Path.Combine(Path.GetTempPath(), $"autodraw_op_{Guid.NewGuid():N}.dxf");
         try
         {
-            string? chosen = ChooseOperation(ed, await OperationService.Catalogue());
-            if (chosen == null) { ed.WriteMessage("\nCancelled."); return; }
-
             string? sending = null;
             if (OperationService.Loaded)
             {
@@ -636,11 +852,12 @@ public class OperationCommands
                 }
                 sending = path;
             }
-            ed.WriteMessage($"\nRunning {chosen} on project {projectId}...");
+            ed.WriteMessage(start > 1
+                ? $"\nGoing on with {chosen} on project {projectId} from step {start}..."
+                : $"\nRunning {chosen} on project {projectId}...");
 
-            var inputs = new JObject();
             OperationResultDTO result = await OperationService.RunOnProject(
-                projectId, chosen, sending, inputs, OperationService.CurrentArtifact);
+                projectId, chosen, sending, inputs, OperationService.CurrentArtifact, start);
             while (result.Error == "needs_input" && result.Inputs != null)
             {
                 // The drawing is kept with the first call; answers go without it.
@@ -648,7 +865,7 @@ public class OperationCommands
                 SayStep(ed, result);
                 if (!Ask(ed, result.Inputs, inputs)) { ed.WriteMessage("\nCancelled."); return; }
                 result = await OperationService.RunOnProject(
-                    projectId, chosen, null, inputs, OperationService.CurrentArtifact);
+                    projectId, chosen, null, inputs, OperationService.CurrentArtifact, start);
             }
 
             foreach (string line in result.Interpreted ?? new List<string>())
@@ -658,6 +875,13 @@ public class OperationCommands
                 SayStep(ed, result);
                 ed.WriteMessage($"\nStopped: {result.Message ?? result.Error}");
                 if (result.Error == "stale") ed.WriteMessage("\nRun ADDOPROJECT to lay the project in again.");
+                // Going on from a review, the check after it found the change
+                // wrong: the drawing sent is kept, and the run waits where it was.
+                else if (OperationService.Paused != null)
+                {
+                    if (result.ArtifactId.HasValue) OperationService.CurrentArtifact = result.ArtifactId;
+                    ed.WriteMessage($"\nChange the drawing and ADOPCONTINUE to go on from step {OperationService.Paused.Next} again.");
+                }
                 return;
             }
 
@@ -666,15 +890,37 @@ public class OperationCommands
             if (!string.IsNullOrWhiteSpace(result.Notes)) ed.WriteMessage("\n" + result.Notes);
             foreach (string warning in result.Warnings ?? new List<string>())
                 ed.WriteMessage("\nWarning: " + warning);
-        }
-        catch (Exception ex)
-        {
-            ed.WriteMessage($"\nError: {ex.Message}");
+            HoldIfPaused(ed, result, chosen, inputs, projectId);
         }
         finally
         {
             try { File.Delete(path); } catch (IOException) { }
         }
+    }
+
+    /// <summary>
+    /// A run that stopped part way is held, with what it needs to go on, until
+    /// the designer has looked and runs ADOPCONTINUE; one that ran through
+    /// leaves nothing waiting.
+    /// </summary>
+    private static void HoldIfPaused(Editor ed, OperationResultDTO result, string chosen,
+                                     JObject inputs, int? projectId)
+    {
+        if (result.Paused == null)
+        {
+            OperationService.Paused = null;
+            return;
+        }
+        OperationService.Paused = new PausedRun
+        {
+            ProjectId = projectId, Name = chosen, Inputs = inputs, Next = result.Paused.Next,
+            // A free run's server keeps nothing, so it is handed what it settled.
+            Facts = projectId.HasValue ? null : result.Facts,
+        };
+        string after = result.Paused.Operation != null ? $" ({result.Paused.Operation})" : "";
+        ed.WriteMessage($"\nPaused after step {result.Paused.Step} of {result.Paused.Steps}{after}: "
+                        + (result.Paused.Message ?? "review the drawing."));
+        ed.WriteMessage("\nChange the drawing if need be, then ADOPCONTINUE to go on.");
     }
 
     /// <summary>
@@ -702,10 +948,17 @@ public class OperationCommands
                 PieceGroupService.Rebuild(tr, db);
                 tr.Commit();
             }
+            // In the grid the server sent the drawing where it was made and
+            // every state along its history, for laying out beside it here.
+            if (PluginSettings.Current.OperationsGrid)
+                OperationGridService.Lay(doc, drawn.States, PluginSettings.Current.Direction);
         }
         doc.Editor.Regen();
         OperationService.CurrentArtifact = drawn.ArtifactId;
         OperationService.Loaded = true;
+        if (drawn.States != null)
+            OperationService.Items = drawn.States.Where(state => state.ItemId.HasValue)
+                .Select(state => state.ItemId!.Value).Distinct().OrderBy(id => id).ToList();
     }
 
     private static bool IsDecoration(Database db, ObjectId id)

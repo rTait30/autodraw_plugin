@@ -43,8 +43,9 @@ public static class OperationService
         var fields = new Dictionary<string, string>
         {
             // A designer is here to look, so a recipe stops after each step
-            // it marks for review (`suggest_nest?`) instead of running on.
-            ["pause"] = "reviews",
+            // it marks for review (`suggest_nest?`) instead of running on -
+            // or after every operation, stepping through it (ADOPTIONS).
+            ["pause"] = Pause,
             // Pieces come back numbered above every piece already in the
             // drawing, so none is grouped with one it is not part of.
             ["object_floor"] = objectFloor.ToString(),
@@ -89,10 +90,11 @@ public static class OperationService
     }
 
     /// <summary>
-    /// The free run stopped for review, which ADOPCONTINUE goes on with; null
-    /// when none is waiting. The server keeps nothing, so this holds what it
-    /// needs again: the name run, the answers given, where to go on from and
-    /// the facts settled so far.
+    /// The run stopped for review, which ADOPCONTINUE goes on with; null when
+    /// none is waiting. A free run's server keeps nothing, so this holds what
+    /// it needs again: the name run, the answers given, where to go on from and
+    /// the facts settled so far. A project run needs only the name, answers
+    /// and where to go on from - the project kept what ran.
     /// </summary>
     public static PausedRun? Paused { get; set; }
 
@@ -108,6 +110,9 @@ public static class OperationService
     /// </summary>
     public static int? DataProjectId { get; set; }
 
+    /// <summary>The ids of the job items the chosen project's history has drawn, as last laid in.</summary>
+    public static List<int> Items { get; set; } = new();
+
     /// <summary>The project drawing last laid in here, which a run starts from.</summary>
     public static int? CurrentArtifact { get; set; }
 
@@ -118,11 +123,25 @@ public static class OperationService
     /// </summary>
     public static bool Loaded { get; set; }
 
-    private static Dictionary<string, string> LaidOut() => new()
+    /// <summary>Where a recipe stops for the designer: after every operation, or only at a review.</summary>
+    private static string Pause => PluginSettings.Current.StepThrough ? "each" : "reviews";
+
+    /// <summary>
+    /// How a project's drawing is asked to be laid out. In the grid the server
+    /// places nothing: the drawing comes back where it was made, with every
+    /// state along its history (`states`) for this side to lay out beside it.
+    /// </summary>
+    private static Dictionary<string, string> LaidOut()
     {
-        ["layout"] = PluginSettings.Current.Layout.ToLowerInvariant(),
-        ["direction"] = PluginSettings.Current.Direction.ToLowerInvariant(),
-    };
+        bool grid = PluginSettings.Current.OperationsGrid;
+        var fields = new Dictionary<string, string>
+        {
+            ["layout"] = grid ? "replace" : PluginSettings.Current.Layout.ToLowerInvariant(),
+            ["direction"] = PluginSettings.Current.Direction.ToLowerInvariant(),
+        };
+        if (grid) fields["states"] = "1";
+        return fields;
+    }
 
     public static async Task<OperationResultDTO> ProjectDrawing(int projectId)
     {
@@ -135,13 +154,17 @@ public static class OperationService
     /// <summary>
     /// Run an operation on the project, sending the drawing back with it where
     /// one is given. Refusals - a value to ask, a project moved on - come back
-    /// readable rather than thrown.
+    /// readable rather than thrown. `start` goes on with a recipe from where it
+    /// stopped (`Paused`); unlike a free run no facts go with it, since the
+    /// server kept what ran.
     /// </summary>
     public static async Task<OperationResultDTO> RunOnProject(
-        int projectId, string id, string? dxfPath, JObject inputs, int? baseArtifact)
+        int projectId, string id, string? dxfPath, JObject inputs, int? baseArtifact, int start = 1)
     {
         var fields = LaidOut();
         fields["inputs"] = inputs.ToString(Formatting.None);
+        fields["pause"] = Pause;
+        if (start > 1) fields["start"] = start.ToString();
         if (baseArtifact.HasValue) fields["base_artifact_id"] = baseArtifact.Value.ToString();
         string endpoint = $"/projects/{projectId}/operations/{Uri.EscapeDataString(id)}/runs";
         HttpResponseMessage response = dxfPath == null
@@ -200,6 +223,46 @@ public static class OperationService
         HttpResponseMessage response = await ApiService.PostForm(
             $"/projects/{projectId}/operations/{(forward ? "forward" : "back")}", LaidOut());
         return await Read(response);
+    }
+
+    /// <summary>
+    /// Write a note on the project's run, against the drawing it is at, for one
+    /// item or (null) the whole job. The reply is the run's log.
+    /// </summary>
+    public static async Task<RunLogDTO> AddNote(int projectId, string text, int? itemId)
+    {
+        var fields = new Dictionary<string, string> { ["text"] = text };
+        if (itemId.HasValue) fields["item_id"] = itemId.Value.ToString();
+        return await ReadLog(await ApiService.PostForm($"/projects/{projectId}/operations/notes", fields));
+    }
+
+    /// <summary>The project's run log: each operation with what it said and what people wrote.</summary>
+    public static async Task<RunLogDTO> Log(int projectId)
+    {
+        return await ReadLog(await ApiService.Get($"/projects/{projectId}/operations/log"));
+    }
+
+    private static async Task<RunLogDTO> ReadLog(HttpResponseMessage response)
+    {
+        string body = await response.Content.ReadAsStringAsync();
+        try
+        {
+            RunLogDTO? log = JsonConvert.DeserializeObject<RunLogDTO>(body);
+            if (log != null)
+            {
+                if (!response.IsSuccessStatusCode && string.IsNullOrWhiteSpace(log.Error))
+                    log.Error = "http_" + (int)response.StatusCode;
+                return log;
+            }
+        }
+        catch (JsonException)
+        {
+        }
+        return new RunLogDTO
+        {
+            Error = "http_" + (int)response.StatusCode,
+            Message = $"HTTP {(int)response.StatusCode} ({response.ReasonPhrase}) - the response was not JSON.",
+        };
     }
 
     private static async Task<OperationResultDTO> Read(HttpResponseMessage response)
@@ -263,9 +326,11 @@ public static class OperationService
     }
 }
 
-/// <summary>A free run stopped for review, as ADOPCONTINUE sends it on.</summary>
+/// <summary>A run stopped for review, as ADOPCONTINUE sends it on.</summary>
 public class PausedRun
 {
+    /// <summary>The project it ran on, or null for a free run.</summary>
+    public int? ProjectId { get; init; }
     public string Name { get; init; } = "";
     public JObject Inputs { get; init; } = new();
     public int Next { get; init; }

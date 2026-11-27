@@ -193,6 +193,106 @@ public class OperationResultDTO
     /// </summary>
     [JsonProperty("items")]
     public List<SelectionItemDTO>? Items { get; set; }
+
+    /// <summary>
+    /// Asked for with `states=1`: each drawing along a project's history,
+    /// oldest first, each only what it drew and where it was made.
+    /// </summary>
+    [JsonProperty("states")]
+    public List<OperationStateDTO>? States { get; set; }
+}
+
+/// <summary>
+/// One row of a project's operation history. An operation over the job's items
+/// is a row per item it changed (`ItemId`), all but its last `Partial`; one
+/// over the whole job is a single row with no item.
+/// </summary>
+public class OperationStateDTO
+{
+    [JsonProperty("artifact_id")]
+    public int ArtifactId { get; set; }
+
+    [JsonProperty("operation")]
+    public string? Operation { get; set; }
+
+    [JsonProperty("recipe")]
+    public string? Recipe { get; set; }
+
+    /// <summary>"operation", or how else it came to be - a drawing sent back from CAD.</summary>
+    [JsonProperty("source")]
+    public string? Source { get; set; }
+
+    [JsonProperty("item_id")]
+    public int? ItemId { get; set; }
+
+    [JsonProperty("partial")]
+    public bool Partial { get; set; }
+
+    /// <summary>What this row drew and nothing else, base64 DXF, where it was made.</summary>
+    [JsonProperty("drawing")]
+    public string? Drawing { get; set; }
+}
+
+/// <summary>A run's log, as `.../log` reads it and a note written hands it back.</summary>
+public class RunLogDTO
+{
+    [JsonProperty("log")]
+    public List<RunLogEntryDTO> Log { get; set; } = new();
+
+    [JsonProperty("error")]
+    public string? Error { get; set; }
+
+    [JsonProperty("message")]
+    public string? Message { get; set; }
+}
+
+/// <summary>
+/// One operation along a run's history - its rows by item taken together - with
+/// what it said and what people wrote while the run was at it. The first entry
+/// may be notes written before anything was drawn, with no operation.
+/// </summary>
+public class RunLogEntryDTO
+{
+    [JsonProperty("artifact_id")]
+    public int? ArtifactId { get; set; }
+
+    [JsonProperty("operation")]
+    public string? Operation { get; set; }
+
+    [JsonProperty("recipe")]
+    public string? Recipe { get; set; }
+
+    [JsonProperty("source")]
+    public string? Source { get; set; }
+
+    [JsonProperty("items")]
+    public List<int>? Items { get; set; }
+
+    /// <summary>What the operation said when it ran.</summary>
+    [JsonProperty("notes")]
+    public string? Notes { get; set; }
+
+    [JsonProperty("created_at")]
+    public string? CreatedAt { get; set; }
+
+    /// <summary>What people wrote.</summary>
+    [JsonProperty("written")]
+    public List<RunNoteDTO>? Written { get; set; }
+}
+
+public class RunNoteDTO
+{
+    [JsonProperty("item_id")]
+    public int? ItemId { get; set; }
+
+    [JsonProperty("user")]
+    public string? User { get; set; }
+
+    [JsonProperty("text")]
+    public string? Text { get; set; }
+
+    [JsonProperty("created_at")]
+    public string? CreatedAt { get; set; }
 }
 
 /// <summary>
