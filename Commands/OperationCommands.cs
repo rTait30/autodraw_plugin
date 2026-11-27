@@ -436,6 +436,7 @@ public class OperationCommands
             OperationService.Items = new List<int>();
             LayIn(doc, drawn);
             ed.WriteMessage($"\nADDO now runs on project {projectId}.");
+            SayWaiting(ed, drawn);
         }
         catch (Exception ex)
         {
@@ -794,7 +795,11 @@ public class OperationCommands
         {
             OperationResultDTO moved = await OperationService.Step(OperationService.ProjectId.Value, forward);
             if (!string.IsNullOrEmpty(moved.Error)) ed.WriteMessage($"\n{moved.Message ?? moved.Error}");
-            if (moved.Drawing != null) LayIn(doc, moved);
+            if (moved.Drawing != null)
+            {
+                LayIn(doc, moved);
+                SayWaiting(ed, moved);
+            }
         }
         catch (Exception ex)
         {
@@ -956,9 +961,35 @@ public class OperationCommands
         doc.Editor.Regen();
         OperationService.CurrentArtifact = drawn.ArtifactId;
         OperationService.Loaded = true;
+        // The run says where it waits for a person, whoever stopped it - this
+        // AutoCAD before a restart, another machine, or a save drawn up to
+        // MPanel - so that is what ADOPCONTINUE goes on with. A run run since
+        // says so again (HoldIfPaused) after this.
+        if (OperationService.ProjectId.HasValue)
+        {
+            if (drawn.Waiting != null)
+                OperationService.Paused = new PausedRun
+                {
+                    ProjectId = OperationService.ProjectId, Name = drawn.Waiting.Name,
+                    Inputs = drawn.Waiting.Inputs ?? new JObject(), Next = drawn.Waiting.Next,
+                };
+            else if (OperationService.Paused?.ProjectId != null)
+                OperationService.Paused = null;
+        }
         if (drawn.States != null)
             OperationService.Items = drawn.States.Where(state => state.ItemId.HasValue)
                 .Select(state => state.ItemId!.Value).Distinct().OrderBy(id => id).ToList();
+    }
+
+    /// <summary>Where the project's run waits for a person, said as a run stopping says it.</summary>
+    private static void SayWaiting(Editor ed, OperationResultDTO drawn)
+    {
+        WaitingDTO? waiting = drawn.Waiting;
+        if (waiting == null) return;
+        string after = waiting.Operation != null ? $" ({waiting.Operation})" : "";
+        ed.WriteMessage($"\n{waiting.Name} is waiting after step {waiting.Step} of {waiting.Steps}{after}: "
+                        + (waiting.Message ?? "review the drawing."));
+        ed.WriteMessage($"\nChange the drawing if need be, then ADOPCONTINUE to go on from step {waiting.Next}.");
     }
 
     private static bool IsDecoration(Database db, ObjectId id)

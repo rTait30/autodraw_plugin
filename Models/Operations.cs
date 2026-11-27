@@ -200,6 +200,41 @@ public class OperationResultDTO
     /// </summary>
     [JsonProperty("states")]
     public List<OperationStateDTO>? States { get; set; }
+
+    /// <summary>
+    /// On a project's drawing: where a recipe stopped for a person on its run -
+    /// a step-through, a review, or a save drawn up to MPanel - while the run is
+    /// still at that drawing. What ADOPCONTINUE goes on with after a restart.
+    /// </summary>
+    [JsonProperty("waiting")]
+    public WaitingDTO? Waiting { get; set; }
+}
+
+/// <summary>A run stopped for a person, as the server keeps it on the run.</summary>
+public class WaitingDTO
+{
+    /// <summary>What was run - a recipe's name, or names typed in - to run again from `Next`.</summary>
+    [JsonProperty("name")]
+    public string Name { get; set; } = "";
+
+    [JsonProperty("step")]
+    public int Step { get; set; }
+
+    [JsonProperty("steps")]
+    public int Steps { get; set; }
+
+    [JsonProperty("next")]
+    public int Next { get; set; }
+
+    [JsonProperty("operation")]
+    public string? Operation { get; set; }
+
+    [JsonProperty("message")]
+    public string? Message { get; set; }
+
+    /// <summary>What a person answered, sent again going on.</summary>
+    [JsonProperty("inputs")]
+    public JObject? Inputs { get; set; }
 }
 
 /// <summary>
