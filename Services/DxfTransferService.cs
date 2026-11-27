@@ -136,7 +136,7 @@ public static class DxfTransferService
             foreach (ObjectId id in ms)
             {
                 Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
-                if (ent == null || excluded.Contains(ent.Layer)) continue;
+                if (ent == null || excluded.Contains(ent.Layer) || OperationGridService.IsPicture(ent)) continue;
                 ids.Add(id);
             }
             tr.Commit();

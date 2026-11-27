@@ -173,7 +173,10 @@ internal static class Prompts
         {
             foreach (ObjectId id in candidates)
             {
-                if (tr.GetObject(id, OpenMode.ForRead) is Entity ent && !decoration.Contains(ent.Layer))
+                // Nor the pictures of earlier states, which are on the layers
+                // they were drawn on: known by what they are, not where.
+                if (tr.GetObject(id, OpenMode.ForRead) is Entity ent && !decoration.Contains(ent.Layer)
+                    && !OperationGridService.IsPicture(ent))
                     kept.Add(id);
             }
             tr.Commit();

@@ -18,7 +18,7 @@ internal static class JobView
     /// <summary>
     /// Replace the drawing with the job's as just sent: everything but the
     /// decoration goes, the drawing comes in, and its history beside it - the
-    /// server's pictures when stacking, the grid when ADOPTIONS asks for one.
+    /// pictures of each state on their own layers, stacked or in a grid.
     /// What the reply says of the job is taken as the job's state, the run
     /// waiting on a person included.
     /// </summary>
@@ -42,10 +42,12 @@ internal static class JobView
                 PieceGroupService.Rebuild(tr, db);
                 tr.Commit();
             }
-            // In the grid the server sent the drawing where it was made and
-            // every state along its history, for laying out beside it here.
-            if (PluginSettings.Current.OperationsGrid)
-                OperationGridService.Lay(doc, drawn.States, PluginSettings.Current.Direction);
+            // Stacked or in a grid, the server sent the drawing where it was
+            // made and every state along its history, laid out beside it here
+            // on the layers each was drawn on.
+            if (OperationGridService.Shown)
+                OperationGridService.Lay(doc, drawn.States, PluginSettings.Current.Direction,
+                                         byItem: PluginSettings.Current.OperationsGrid);
         }
         doc.Editor.Regen();
 

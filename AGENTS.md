@@ -56,7 +56,7 @@ Trust this section instead.
 | `Services/AutoDrawService.cs` | One method per automation endpoint, plus the session's project and branch. |
 | `Services/DxfTransferService.cs` | Erase, export, import. The mechanics of the redraw. |
 | `Services/AutoDrawVisualizer.cs` | The INFO status board and the NOTES panel. |
-| `Services/OperationGridService.cs` | ADOPTIONS Layout Grid: a project's operation history (`states`) as pictures, operations by items, beside the live drawing. |
+| `Services/OperationGridService.cs` | ADOPTIONS Layout Stack and Grid for a loaded job: its history (`states`) as pictures beside the live drawing - one per operation, or operations by items. Pictures keep their entities' own layers, stamp stripped, and are kept out of every send by `IsPicture` (block name `ADSNAP_OP<id>`), not by layer. |
 | `Services/PieceGroupService.cs` | One group per drawn piece, rebuilt after every redraw. |
 | `Services/ClearanceHaloService.cs` | The guide a designer nests against: half the server's gap, drawn round each piece. |
 | `Services/DrawingCache.cs` | Every full-scope state the server sends, on disk under `%LOCALAPPDATA%\autodraw\cache\<project>\`, keyed by artifact + layout + direction; and the earlier-state pictures. Auto `ADSTEPFORWARD` plays the states ahead from it and catches the record up with one `forward` at the end. Never evicted: a state never changes. |
@@ -74,7 +74,7 @@ Trust this section instead.
 | `ADBACK` / `ADFORWARD` | Along a loaded job's history, an operation at a time (the server passes over an operation's per-item rows). |
 | `ADNOTE` / `ADLOG` | The job's log (`POST .../operations/notes`, `GET .../operations/log`): people's notes for the job or an item, and each operation with what it said. Loaded or attached. |
 | `ADRECIPE` | Make or change a recipe by typing its steps as ADRUN takes them - `seam_marks, label_panels(height=150)`. An existing one is printed that way first; Enter keeps it. Saving adds the next version, never changes one. The server reads the line (`operations/recipes.py`) - this side sends it as typed. **Save** makes one of a loaded job's last runs. |
-| `ADOPTIONS` | Pause Each/Reviews; Layout Replace/Stack/Grid - Grid asks for `layout=replace` and `states=1` and `OperationGridService` lays each row of a loaded job's history beside the drawing as a picture on AUTODRAW_HISTORY, operations along the Direction, items across, job-wide rows first, captions on AUTODRAW_CAPTION; Direction; Depth (a free run's in-between states drawn in Stack, captioned on AUTODRAW_CAPTION). |
+| `ADOPTIONS` | Pause Each/Reviews; Layout Replace/Stack/Grid - a loaded job is always asked for with `layout=replace`, so the server places nothing, and with `states=1` in Stack or Grid; `OperationGridService` lays the history beside the drawing (the server's own `history`, flattened onto AUTODRAW_HISTORY, is no longer asked for): Stack one picture per operation along the Direction, Grid with items across, job-wide rows first, captions on AUTODRAW_CAPTION; Direction; Depth (a free run's in-between states drawn in Stack, captioned on AUTODRAW_CAPTION). |
 
 The older step automation, being retired, is behind the `ADSTEP` prefix:
 

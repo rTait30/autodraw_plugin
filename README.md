@@ -45,8 +45,10 @@ next, e.g. `Job 124 at draw_work_points@1. shadesail waits at step 3: ADGO to go
 - **Pause** - `Reviews` (default): a recipe stops only at a step marked for a
   person to check. `Each`: it stops after every operation, to step through it.
 - **Layout** - `Replace`: the result takes the place of what was sent.
-  `Stack`: it is drawn beside it. `Grid`: a loaded job's history is drawn
-  beside its drawing as small pictures, operations one way and items the other.
+  `Stack`: it is drawn beside it, and a loaded job's history is drawn beside
+  its drawing, one picture per operation. `Grid`: the same, with each item in
+  a lane of its own. The pictures stay on the layers they were drawn on (turn
+  a layer off and it goes in the pictures too) and are never sent back.
 - **Direction** - which way stacked states and the grid run.
 - **Depth** - in Stack, how many of a free run's in-between states to draw.
 

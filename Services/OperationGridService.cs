@@ -9,26 +9,50 @@ using autodraw_plugin.Models.Operations;
 namespace autodraw_plugin.Services;
 
 /// <summary>
-/// A project's operation history as a grid of pictures beside the drawing in
-/// hand (ADOPTIONS Layout Grid): one lane per operation along the history, in
-/// the Direction set, and across it one lane per job item, the job-wide rows
-/// in a lane of their own first.
+/// A loaded job's history drawn beside its drawing, as pictures of each state
+/// on the layers it was drawn on (ADOPTIONS Layout Stack or Grid).
+///
+/// - Stack: one picture per operation along the Direction, oldest first.
+/// - Grid: the same lane of operations, and across it one lane per job item,
+///   the job-wide rows in a lane of their own first.
 ///
 /// The server hands out each row of the history (`states=1`) as only what it
 /// drew, where it was made; it places nothing. An operation over the job's
 /// items is a row per item, all but its last `partial`, so a run of partial
-/// rows and the row ending it are one operation - one lane, a cell per item.
+/// rows and the row ending it are one operation.
 ///
-/// Like the stack's pictures these are block references on AUTODRAW_HISTORY,
-/// so they are decoration: never submitted, never grouped, never counted. The
-/// drawing in hand stays live and where it was made.
+/// A picture is a block reference to a block named `ADSNAP_OP&lt;artifact&gt;`,
+/// its entities on their own layers with the AUTODRAW stamp taken off - it is
+/// a picture, not the server's work. It is kept out of everything sent back
+/// by what it is (`IsPicture`), not by a layer, so turning a layer off turns
+/// it off in the pictures too. The drawing in hand stays live where it was made.
 /// </summary>
 public static class OperationGridService
 {
-    /// <summary>Lay the grid out, replacing the pictures there were. Nothing without states.</summary>
-    public static void Lay(Document doc, List<OperationStateDTO>? states, string direction)
+    private const string Prefix = GridService.SnapshotPrefix + "OP";
+
+    /// <summary>Whether a loaded job's history is drawn beside it, and so asked for.</summary>
+    public static bool Shown => PluginSettings.Current.OperationsGrid
+                                || string.Equals(PluginSettings.Current.Layout, "Stack",
+                                                 StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Whether an entity is one of these pictures, never to be sent to the server.</summary>
+    public static bool IsPicture(Entity entity) =>
+        entity is BlockReference placed && placed.Name.StartsWith(Prefix, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Lay the history out, replacing the pictures there were. Nothing without
+    /// states. `byItem` gives each item its own lane (Grid); otherwise each
+    /// operation is one picture of everything it drew (Stack).
+    /// </summary>
+    public static void Lay(Document doc, List<OperationStateDTO>? states, string direction, bool byItem)
     {
         Database db = doc.Database;
+        using (Transaction tr = db.TransactionManager.StartTransaction())
+        {
+            Clear(tr, db);
+            tr.Commit();
+        }
         if (states == null || states.Count == 0) return;
 
         // One lane per operation: the partial rows and the row that ends them.
@@ -43,29 +67,36 @@ public static class OperationGridService
         }
         if (waiting.Count > 0) operations.Add((Label(waiting[^1]), waiting));
 
-        // The job-wide lane first, then the items in the order of their ids.
-        bool jobWide = states.Any(state => state.ItemId == null);
-        List<int?> items = states.Where(state => state.ItemId != null)
-            .Select(state => state.ItemId).Distinct().OrderBy(id => id).ToList();
-        if (jobWide) items.Insert(0, null);
+        // Across: the job-wide lane first, then the items in the order of their
+        // ids - or, stacked, a single lane for everything.
+        List<int?> items = new() { null };
+        if (byItem)
+        {
+            items = states.Where(state => state.ItemId != null)
+                .Select(state => state.ItemId).Distinct().OrderBy(id => id).ToList();
+            if (states.Any(state => state.ItemId == null)) items.Insert(0, null);
+        }
+        int LaneOf(OperationStateDTO state) => byItem ? items.IndexOf(state.ItemId) : 0;
 
         // Defined once each: a row's drawing never changes once saved.
         foreach (OperationStateDTO state in states)
         {
             string name = BlockName(state);
             if (!string.IsNullOrEmpty(state.Drawing) && !GridService.HasBlock(db, name))
+            {
                 GridService.DefineBlock(db, name, state.Drawing);
+                Unstamp(db, name);
+            }
         }
 
         using (Transaction tr = db.TransactionManager.StartTransaction())
         {
-            AutoDrawVisualizer.EnsureLayer(tr, db, GridService.HistoryLayer);
             AutoDrawVisualizer.EnsureLayer(tr, db, AutoDrawVisualizer.CaptionLayer);
             BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
             BlockTableRecord ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
 
             // What each row drew, measured, so every cell can be as big as the
-            // biggest and the grid reads as a grid.
+            // biggest and the pictures line up.
             var extents = new Dictionary<int, Extents3d>();
             foreach (OperationStateDTO state in states)
             {
@@ -76,8 +107,17 @@ public static class OperationGridService
             }
             if (extents.Count == 0) { tr.Commit(); return; }
 
-            double width = extents.Values.Max(box => box.MaxPoint.X - box.MinPoint.X);
-            double height = extents.Values.Max(box => box.MaxPoint.Y - box.MinPoint.Y);
+            // An operation's cell holds all its rows when they share a lane, so
+            // it is measured as their union.
+            Extents3d? CellBox(List<OperationStateDTO> rows) => rows
+                .Where(row => extents.ContainsKey(row.ArtifactId))
+                .Aggregate((Extents3d?)null, (box, row) => Grow(box, extents[row.ArtifactId]));
+            var boxes = operations.SelectMany(op => byItem
+                    ? op.rows.Where(row => extents.ContainsKey(row.ArtifactId)).Select(row => (Extents3d?)extents[row.ArtifactId])
+                    : new[] { CellBox(op.rows) })
+                .Where(box => box.HasValue).Select(box => box!.Value).ToList();
+            double width = boxes.Max(box => box.MaxPoint.X - box.MinPoint.X);
+            double height = boxes.Max(box => box.MaxPoint.Y - box.MinPoint.Y);
             double gap = Math.Max(Math.Max(width, height) * 0.15, 1.0);
             double cellW = width + gap, cellH = height + gap;
             double text = Math.Max(Math.Min(cellW, cellH) * 0.04, 1.0);
@@ -92,45 +132,85 @@ public static class OperationGridService
             double top = live.HasValue
                 ? (down ? live.Value.MinPoint.Y - gap : live.Value.MaxPoint.Y)
                 : 0.0;
-            // The captions take the first row and column of cells' worth of text.
-            double captionW = text * 14, captionH = text * 3;
+            double captionW = byItem ? text * 14 : 0, captionH = text * 3;
             double x0 = left + captionW, y0 = top - captionH;
 
             // Operations run the Direction set; items run across them.
-            Point2d CellAt(int operation, int item) => down
-                ? new Point2d(x0 + item * cellW, y0 - (operation + 1) * cellH)
-                : new Point2d(x0 + operation * cellW, y0 - (item + 1) * cellH);
+            Point2d CellAt(int operation, int lane) => down
+                ? new Point2d(x0 + lane * cellW, y0 - (operation + 1) * cellH)
+                : new Point2d(x0 + operation * cellW, y0 - (lane + 1) * cellH);
 
             for (int op = 0; op < operations.Count; op++)
             {
                 Point2d at = CellAt(op, 0);
                 Caption(tr, ms, down
-                    ? new Point3d(left, at.Y + cellH / 2, 0)
+                    ? new Point3d(byItem ? left : at.X, byItem ? at.Y + cellH / 2 : at.Y + cellH - text * 1.5, 0)
                     : new Point3d(at.X, top - text * 1.5, 0), $"{op + 1}. {operations[op].label}", text);
 
+                Extents3d? together = byItem ? null : CellBox(operations[op].rows);
                 foreach (OperationStateDTO state in operations[op].rows)
                 {
-                    if (!extents.TryGetValue(state.ArtifactId, out Extents3d box)) continue;
-                    Point2d cell = CellAt(op, items.IndexOf(state.ItemId));
-                    // Its lower-left corner in the cell's, a half gap in.
+                    if (!extents.TryGetValue(state.ArtifactId, out Extents3d own)) continue;
+                    Extents3d box = together ?? own;
+                    Point2d cell = CellAt(op, LaneOf(state));
+                    // The cell's content by its lower-left corner, a half gap in.
                     var shift = new Vector3d(cell.X + gap / 2 - box.MinPoint.X,
                                              cell.Y + gap / 2 - box.MinPoint.Y, 0);
-                    var picture = new BlockReference(Point3d.Origin + shift, bt[BlockName(state)])
-                    {
-                        Layer = GridService.HistoryLayer,
-                    };
+                    var picture = new BlockReference(Point3d.Origin + shift, bt[BlockName(state)]) { Layer = "0" };
                     ms.AppendEntity(picture);
                     tr.AddNewlyCreatedDBObject(picture, true);
                 }
             }
 
-            for (int item = 0; item < items.Count; item++)
+            if (byItem)
             {
-                Point2d at = CellAt(0, item);
-                string label = items[item] == null ? "Job" : $"Item {items[item]}";
-                Caption(tr, ms, down
-                    ? new Point3d(at.X, top - text * 1.5, 0)
-                    : new Point3d(left, at.Y + cellH / 2, 0), label, text);
+                for (int lane = 0; lane < items.Count; lane++)
+                {
+                    Point2d at = CellAt(0, lane);
+                    string label = items[lane] == null ? "Job" : $"Item {items[lane]}";
+                    Caption(tr, ms, down
+                        ? new Point3d(at.X, top - text * 1.5, 0)
+                        : new Point3d(left, at.Y + cellH / 2, 0), label, text);
+                }
+            }
+            tr.Commit();
+        }
+    }
+
+    /// <summary>Erase every picture placed; the definitions stay, a row never changing.</summary>
+    public static void Clear(Transaction tr, Database db)
+    {
+        BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+        BlockTableRecord ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
+        foreach (ObjectId id in ms)
+        {
+            if (tr.GetObject(id, OpenMode.ForRead) is Entity ent && IsPicture(ent))
+            {
+                ent.UpgradeOpen();
+                ent.Erase();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Take the AUTODRAW stamp off a picture's entities. It says "the server
+    /// drew this and can redraw it", which a picture is not - and a picture
+    /// exploded with it on would carry the live entities' own ids.
+    /// </summary>
+    private static void Unstamp(Database db, string name)
+    {
+        using (Transaction tr = db.TransactionManager.StartTransaction())
+        {
+            BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+            if (!bt.Has(name)) { tr.Commit(); return; }
+            var block = (BlockTableRecord)tr.GetObject(bt[name], OpenMode.ForRead);
+            foreach (ObjectId id in block)
+            {
+                if (tr.GetObject(id, OpenMode.ForRead) is not Entity ent) continue;
+                if (ent.GetXDataForApplication("AUTODRAW") == null) continue;
+                ent.UpgradeOpen();
+                // Naming the application alone removes its data.
+                ent.XData = new ResultBuffer(new TypedValue((int)DxfCode.ExtendedDataRegAppName, "AUTODRAW"));
             }
             tr.Commit();
         }
@@ -146,8 +226,7 @@ public static class OperationGridService
     /// The block a row's picture is made of. Under the snapshot prefix, so a
     /// reset forgets it: the server reuses ids once a job's states are deleted.
     /// </summary>
-    private static string BlockName(OperationStateDTO state) =>
-        GridService.SnapshotPrefix + "OP" + state.ArtifactId;
+    private static string BlockName(OperationStateDTO state) => Prefix + state.ArtifactId;
 
     private static void Caption(Transaction tr, BlockTableRecord ms, Point3d at, string words, double height)
     {
@@ -170,7 +249,7 @@ public static class OperationGridService
         return box;
     }
 
-    /// <summary>The drawing in hand: everything in modelspace but the decoration.</summary>
+    /// <summary>The drawing in hand: everything in modelspace but the decoration and the pictures.</summary>
     private static Extents3d? Live(Transaction tr, BlockTableRecord ms)
     {
         var decoration = new HashSet<string>(AutoDrawVisualizer.DecorationLayers,
@@ -178,7 +257,7 @@ public static class OperationGridService
         Extents3d? box = null;
         foreach (ObjectId id in ms)
         {
-            if (tr.GetObject(id, OpenMode.ForRead) is Entity ent && !decoration.Contains(ent.Layer))
+            if (tr.GetObject(id, OpenMode.ForRead) is Entity ent && !decoration.Contains(ent.Layer) && !IsPicture(ent))
                 box = Grow(box, ent.Bounds);
         }
         return box;

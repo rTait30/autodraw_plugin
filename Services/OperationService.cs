@@ -93,19 +93,20 @@ public static class OperationService
     private static string Pause => PluginSettings.Current.StepThrough ? "each" : "reviews";
 
     /// <summary>
-    /// How a project's drawing is asked to be laid out. In the grid the server
-    /// places nothing: the drawing comes back where it was made, with every
-    /// state along its history (`states`) for this side to lay out beside it.
+    /// How a job's drawing is asked for. The server places nothing: the
+    /// drawing comes back where it was made, and - stacked or in a grid -
+    /// every state along its history (`states`), each on the layers it was
+    /// drawn on, for OperationGridService to lay out beside it. The server's
+    /// own stacked `history` would flatten them onto one layer.
     /// </summary>
     private static Dictionary<string, string> LaidOut()
     {
-        bool grid = PluginSettings.Current.OperationsGrid;
         var fields = new Dictionary<string, string>
         {
-            ["layout"] = grid ? "replace" : PluginSettings.Current.Layout.ToLowerInvariant(),
+            ["layout"] = "replace",
             ["direction"] = PluginSettings.Current.Direction.ToLowerInvariant(),
         };
-        if (grid) fields["states"] = "1";
+        if (OperationGridService.Shown) fields["states"] = "1";
         return fields;
     }
 
