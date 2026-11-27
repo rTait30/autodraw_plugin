@@ -33,16 +33,22 @@ Read the server's source; it is a short walk and it is authoritative.
 
 ## Layout
 
-`Notes/Structure.txt` and `README.md` are both **out of date** - they name files
-and commands (`ProjectData.cs`, `UiRenderer.cs`, `ADLSC`, `ADSSC`) that no
-longer exist. Trust this section instead.
+`README.md` is the designer's guide to the commands, kept current.
+`Notes/Structure.txt` is **out of date** - it names files and commands
+(`ProjectData.cs`, `UiRenderer.cs`, `ADLSC`, `ADSSC`) that no longer exist.
+Trust this section instead.
 
 | File | What it is |
 | --- | --- |
 | `autodraw.cs` | `IExtensionApplication`. Builds the two global statics, `autodraw.Auth` and `autodraw.AutoDraw`, on load. |
 | `Commands/AuthCommands.cs` | `ADLOGIN`, `ADLOGOUT`, `ADWHOAMI`. |
-| `Commands/AutoDrawCommands.cs` | Everything else. The whole designer-facing CLI. |
-| `Commands/OperationCommands.cs` | `ADDO` and its project commands - the server's operations, free or on a project. |
+| `Commands/JobCommands.cs` | `ADOPEN`, `ADSTATUS`, `ADBACK`, `ADFORWARD`, `ADNOTE`, `ADLOG`, and `ADOPTIONS` (class `Options`). |
+| `Commands/RunCommands.cs` | `ADRUN` and `ADGO`: free runs on a selection and runs on a loaded job. |
+| `Commands/RecipeCommands.cs` | `ADRECIPE`. |
+| `Commands/JobView.cs` | Laying a job's drawing in, holding a stop, the status line. |
+| `Commands/Prompts.cs` | Every prompt the commands share: choosing what to run, asking an operation's inputs by type, selecting what to send. |
+| `Services/Job.cs` | The open job: project, mode (None/Loaded/Attached), drawing it is at, what waits, last run. Filled only from server replies. |
+| `Commands/AutoDrawCommands.cs` | The older step automation, `ADSTEP*`. Being retired. |
 | `Services/OperationService.cs` | The server's operations endpoints, free and project: catalogue, run, history, and exporting and erasing a selection. |
 | `Services/ApiService.cs` | HTTP. Bearer token on every request, refreshed first when it has lapsed and retried once on a 401; `BaseUrl` defaults to `http://localhost:5001/api`. |
 | `Services/AuthService.cs` | Login, token, role. A 10-minute access token in memory; the refresh token is the login, spent for a new one on every refresh (server: `api/auth/tokens.py`). |
@@ -53,7 +59,7 @@ longer exist. Trust this section instead.
 | `Services/OperationGridService.cs` | ADOPTIONS Layout Grid: a project's operation history (`states`) as pictures, operations by items, beside the live drawing. |
 | `Services/PieceGroupService.cs` | One group per drawn piece, rebuilt after every redraw. |
 | `Services/ClearanceHaloService.cs` | The guide a designer nests against: half the server's gap, drawn round each piece. |
-| `Services/DrawingCache.cs` | Every full-scope state the server sends, on disk under `%LOCALAPPDATA%\autodraw\cache\<project>\`, keyed by artifact + layout + direction; and the earlier-state pictures. Auto `ADFORWARD` plays the states ahead from it and catches the record up with one `forward` at the end. Never evicted: a state never changes. |
+| `Services/DrawingCache.cs` | Every full-scope state the server sends, on disk under `%LOCALAPPDATA%\autodraw\cache\<project>\`, keyed by artifact + layout + direction; and the earlier-state pictures. Auto `ADSTEPFORWARD` plays the states ahead from it and catches the record up with one `forward` at the end. Never evicted: a state never changes. |
 | `Models/*.cs` | DTOs, mirroring the server's JSON. No logic. |
 
 ## The commands
@@ -61,28 +67,30 @@ longer exist. Trust this section instead.
 | Command | What it does |
 | --- | --- |
 | `ADLOGIN` / `ADLOGOUT` / `ADWHOAMI` | Auth only. |
-| `ADSTART` | Load a project by id and lay its whole drawing in, replacing what is there. The resync of last resort. |
-| `ADSTATUS` | Login, project, next step, and whether the drawing is in step with the record. |
-| `ADCONTINUE` | Submit and take one substep. |
-| `ADRUN` | Submit and run on until something needs a person. One submission and one reply however many steps run. |
-| `ADBACK` | Undo back to a substep. Full resync from the record. |
-| `ADFORWARD` | Redo, without running the step again - the server restores a drawing it already made. |
-| `ADBRANCH` | List the lines of work and load one's tip. |
-| `ADNOTE` | Attach a note to the state now loaded. |
-| `ADRESET` | Delete a project's automation everywhere: the server's reset endpoint (record, meta, every artifact, operation runs included), then this project's `DrawingCache` folder and the drawing's `ADSNAP_` pictures. Use this, not the endpoint alone - SQLite reuses deleted artifact ids, so a cache or picture left behind would be shown for a new state. |
-| `ADDO` | Run one of the server's operations or recipes - by its number in the list, or names typed in, several separated by commas to run in turn as a recipe saved nowhere - answering what it asks with the prompt its type calls for. On the project chosen with `ADDOPROJECT`, the job answers what it can and each run is kept on the project's history (`ADDOBACK`, `ADDOFORWARD`); the drawing is replaced whole, and in Layout Stack its earlier states are drawn beside it as pictures on AUTODRAW_HISTORY. With no project it is a free run on a selection (Enter for the whole drawing): Layout Replace erases exactly what was sent and lays the result in its place; Layout Stack keeps it and lays the result beside it. Where the data project (`ADDODATA`) has several items and nothing sent says which is which, the server answers `needs_selection` with the items: each is selected in turn (Enter leaves it out) and sent as its own DXF, `drawing_<item>`, and what was selected is what the result replaces. |
-| `ADOPCONTINUE` | Go on with an `ADOP` run that stopped part way. Every run, free or on a project, is sent `pause=reviews` - a recipe stops after a step marked for review (`suggest_nest?`) - or `pause=each` with `ADOPTIONS` Steps Each, stopping after every operation to step through it. The drawing is laid in as usual and `OperationService.Paused` holds the name, the answers and the step to go on from (`paused.next`). The designer changes the drawing, then `ADOPCONTINUE` sends it with `start`: a free run sends the selection (Enter for the whole drawing) and the `facts`, since its server keeps nothing; a project run sends the whole drawing with `base_artifact_id` and no facts - the project saved what ran. If the check after a review refuses, it stays paused at the same step to be changed and continued again. A new `ADOP`, or choosing another project, drops a waiting run. A project run's stop is also kept on the server's run and comes back as `waiting` whenever the project is laid in (`ADDOPROJECT`, `ADDOBACK`/`ADDOFORWARD`), so `ADOPCONTINUE` goes on with it after a restart, from another machine, or after a save drew a shade sail up to MPanel. |
-| `ADOPPART` | A free run of a recipe picked up part way: lists the recipes alone, then the chosen recipe's operations in the order they run (the catalogue's `operations`), and sends the selection (Enter for the whole drawing) with `start` at the step picked. The steps before it are not run, and no `facts` go with it - the operations work from the drawing. Otherwise as `ADOP`: answers asked, paused for review, `ADOPCONTINUE` to go on. Not with a project chosen. |
-| `ADOPNOTE` | Write a note in the chosen project's job log (`POST .../operations/notes`): the text, then an item's id (the items the history has drawn are offered) or Enter for the whole job. Kept against the drawing the run is at, beside what the operations said. |
-| `ADOPLOG` | The chosen project's job log (`GET .../operations/log`): each operation along the history, oldest first, the items it drew, what it said when it ran (the `notes` the run printed) and what people wrote with `ADOPNOTE`. |
-| `ADOPTIONS` | How `ADOP` runs. Steps: Each (`pause=each`) or Reviews (`pause=reviews`). Layout: Replace or Stack - the same setting `ADSETTINGS` has - or Grid, for a project's history: the server is asked for `layout=replace` and `states=1`, the drawing stays live where it was made, and each row of the history is laid beside it as a picture on AUTODRAW_HISTORY by `OperationGridService` - operations along the Direction, the job's items across them, job-wide rows in a lane of their own first, captions on AUTODRAW_CAPTION. Grid leaves `Layout` as it was for the step automation and for free runs. Direction is shared with `ADSETTINGS`. |
-| `ADDOPROJECT` | Choose the project `ADDO` runs on and lay its drawing in; Enter for free runs. |
-| `ADDOBACK` / `ADDOFORWARD` | Along the chosen project's history of operation runs. |
-| `ADSETTINGS` Steps | A depth. In Layout Stack, a free `ADDO` of several steps - a list typed in or a recipe - draws its states beside each other as live geometry, each captioned on AUTODRAW_CAPTION (a decoration layer, never sent): 0 only the final one, 1 one per step, 2 opening the recipes inside it one level, All after every operation. |
-| `ADSETTINGS` Info | On writes every substep's `description` (else its `method`) under it on the INFO board. The substep waiting on a person shows its own regardless, its cell is outlined in red on AUTODRAW_GRID with "YOUR TURN" and the description written in it, and the command line says the same after every step. Any other state in hand gets a thinner cyan outline. |
-| `ADDODATA` | Choose a project free runs take their answers from (fabric, quantities), storing nothing on it; Enter for none. |
-| `ADDOSAVE` | Save the last runs on the chosen project as a recipe, and print what it asks, needs and warns of. |
-| `ADRECIPE` | Make or change a recipe by typing its steps as `ADDO` takes them, each step's answers in brackets - `seam_marks, label_panels(height=150)`. An existing one is printed that way first, so editing is typing the line again; Enter keeps it. Saving adds the next version, never changes one. The server reads the line (`operations/recipes.py`, `step_of`/`written`) - this side sends it as typed and does not split it. |
+| `ADOPEN` | Open a job (`Job`, `Services/Job.cs`). **Load** asks the server for the project's drawing (`GET .../operations/drawing`) and lays it in whole (`JobView.LayIn`): runs then go on the project and are kept on its history. **Attach** lays nothing in: free runs on the selection take their answers from the project (`project_id` on the free run) and write a line in its log. Attach is the default when the drawing already has work in it, so a hand drawing is never wiped by accident. Enter closes the job. |
+| `ADSTATUS` | Login, mode, options, last run, and `Job.Status()` - the one line every command ends with. |
+| `ADRUN` | Run an operation or recipe - by number, names typed in (commas, answers in brackets), **Again**/Enter (`Job.Last`, with its answers, so nothing is asked twice) or **Part** (a recipe from a step, `start`). Loaded: `OnJob` - the whole drawing goes back with `base_artifact_id`, the result laid in whole. Otherwise `Free` - the selection (Enter for all) goes to the free endpoint; Layout Replace erases exactly what was sent, Stack draws beside it; `needs_selection` asks for each item's geometry in turn. Every run sends `pause` (`reviews`, or `each` with Pause Each). |
+| `ADGO` | Go on with `Job.Paused` from `paused.next`. A free run's stop lives only here (with its `facts`, since the free server keeps nothing); a job's comes back from the server as `waiting` whenever it is laid in, so ADGO works after a restart, from another machine, or after a save drew a shade sail up to MPanel. Refused (a check after a review), it still waits at the same step. Does not change what ADRUN Again repeats. |
+| `ADBACK` / `ADFORWARD` | Along a loaded job's history, an operation at a time (the server passes over an operation's per-item rows). |
+| `ADNOTE` / `ADLOG` | The job's log (`POST .../operations/notes`, `GET .../operations/log`): people's notes for the job or an item, and each operation with what it said. Loaded or attached. |
+| `ADRECIPE` | Make or change a recipe by typing its steps as ADRUN takes them - `seam_marks, label_panels(height=150)`. An existing one is printed that way first; Enter keeps it. Saving adds the next version, never changes one. The server reads the line (`operations/recipes.py`) - this side sends it as typed. **Save** makes one of a loaded job's last runs. |
+| `ADOPTIONS` | Pause Each/Reviews; Layout Replace/Stack/Grid - Grid asks for `layout=replace` and `states=1` and `OperationGridService` lays each row of a loaded job's history beside the drawing as a picture on AUTODRAW_HISTORY, operations along the Direction, items across, job-wide rows first, captions on AUTODRAW_CAPTION; Direction; Depth (a free run's in-between states drawn in Stack, captioned on AUTODRAW_CAPTION). |
+
+The older step automation, being retired, is behind the `ADSTEP` prefix:
+
+| Command | What it does |
+| --- | --- |
+| `ADSTEPSTART` | Load a project by id and lay its whole drawing in, replacing what is there. The resync of last resort. |
+| `ADSTEPSTATUS` | Login, project, next step, and whether the drawing is in step with the record. |
+| `ADSTEPCONTINUE` | Submit and take one substep. |
+| `ADSTEPRUN` | Submit and run on until something needs a person. One submission and one reply however many steps run. |
+| `ADSTEPBACK` | Undo back to a substep. Full resync from the record. |
+| `ADSTEPFORWARD` | Redo, without running the step again - the server restores a drawing it already made. |
+| `ADSTEPBRANCH` | List the lines of work and load one's tip. |
+| `ADSTEPNOTE` | Attach a note to the state now loaded. |
+| `ADSTEPRESET` | Delete a project's automation everywhere: the server's reset endpoint (record, meta, every artifact, operation runs included), then this project's `DrawingCache` folder and the drawing's `ADSNAP_` pictures. Use this, not the endpoint alone - SQLite reuses deleted artifact ids, so a cache or picture left behind would be shown for a new state. |
+| `ADSTEPSETTINGS` Info | On writes every substep's `description` (else its `method`) under it on the INFO board. The substep waiting on a person shows its own regardless, its cell is outlined in red on AUTODRAW_GRID with "YOUR TURN" and the description written in it, and the command line says the same after every step. Any other state in hand gets a thinner cyan outline. |
+| `ADSTEPSTOP` / `ADSTEPSETTINGS` | Stop a playing job; the step automation's own settings (Auto, Tick, Layout, Direction, Gridlines, Info). |
 
 ## The redraw contract
 
@@ -99,11 +107,11 @@ preserve when adding one:
 There are two erases and the difference matters:
 
 - **`EraseOwned`** removes only entities carrying `AUTODRAW` XDATA, and spares
-  anything marked `owner=external`. This is the ordinary `ADCONTINUE` / `ADRUN`
+  anything marked `owner=external`. This is the ordinary `ADSTEPCONTINUE` / `ADSTEPRUN`
   path: the server owns what it drew and regenerates it, and MPanel's mesh is
   left alone because the server cannot redraw it.
-- **`EraseAllExcept`** removes everything but INFO and NOTES. Used by `ADSTART`,
-  `ADBACK`, `ADFORWARD`, `ADBRANCH`, and by `ADCONTINUE` when the server sets
+- **`EraseAllExcept`** removes everything but INFO and NOTES. Used by `ADSTEPSTART`,
+  `ADSTEPBACK`, `ADSTEPFORWARD`, `ADSTEPBRANCH`, and by `ADSTEPCONTINUE` when the server sets
   `Resync` - all cases where the record is authoritative and the server is
   sending the full scope back, MPanel's geometry included.
 
@@ -155,8 +163,8 @@ into a document that is already open, so they arrive with new handles and the
 groups the server sent refer to nothing.
 
 `PieceGroupService.Rebuild(tr, db)` runs at **all five** redraw sites -
-`ADSTART`, `ADBACK`, `ADBRANCH`, `ADFORWARD`, and `Advance`, which is both
-`ADCONTINUE` and `ADRUN` - inside the transaction that already rebuilds the
+`ADSTEPSTART`, `ADSTEPBACK`, `ADSTEPBRANCH`, `ADSTEPFORWARD`, and `Advance`, which is both
+`ADSTEPCONTINUE` and `ADSTEPRUN` - inside the transaction that already rebuilds the
 board. It needs nothing from the server: it buckets modelspace by each entity's
 `object:=` and makes one selectable group per bucket, named `PIECE_<object>`.
 
@@ -276,7 +284,7 @@ out, in order of effort - **none implemented yet**:
    included, so you log in again each time.
 4. **For scripted checks**, `accoreconsole.exe /i test.dwg /s test.scr` is
    headless AutoCAD: seconds to start, a fresh process each run so nothing stays
-   locked, and the script can `NETLOAD`, `ADSTART`, `ADRUN` and `SAVEAS`. No
+   locked, and the script can `NETLOAD`, `ADSTEPSTART`, `ADSTEPRUN` and `SAVEAS`. No
    GUI, so it will not replace looking at the drawing.
 
 ## Things that have bitten
@@ -285,11 +293,11 @@ out, in order of effort - **none implemented yet**:
   no project while the drawing still holds the work - or worse, the drawing is
   empty while the record holds geometry, and submitting it would report every
   entity as deleted. `CountStamped` against the record's `EntityCount` is the
-  check; `ADSTATUS` prints it and `Advance` refuses on it.
+  check; `ADSTEPSTATUS` prints it and `Advance` refuses on it.
 - **`ApiService.BaseUrl` points at Flask directly**, not at Vite. The dev
   server's `/api` proxy only exists while `npm run dev` is running.
-- **Stale docs in this repo.** `Notes/Structure.txt` and `README.md` describe a
-  plugin that no longer exists. Fix or delete them if you touch them; do not
+- **Stale docs in this repo.** `Notes/Structure.txt` describes a plugin that
+  no longer exists. Fix or delete them if you touch them; do not
   believe them.
 
 ## Style

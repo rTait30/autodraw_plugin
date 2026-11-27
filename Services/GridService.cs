@@ -123,7 +123,7 @@ public static class GridService
             MText banner = new MText
             {
                 Contents = $"{{\\H900;\\C1;YOUR TURN - {waiting.step.Label}: {waiting.substep.Label}}}"
-                         + $"\\P{{\\H450;\\C2;{about}\\PDraw it here, then ADCONTINUE.}}",
+                         + $"\\P{{\\H450;\\C2;{about}\\PDraw it here, then ADSTEPCONTINUE.}}",
                 Location = new Point3d(box[0] + 600, top, 0),
                 TextHeight = 450,
                 Width = size * 0.6,

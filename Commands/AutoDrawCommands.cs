@@ -64,7 +64,7 @@ public class AutoDrawCommands
 
     /// <summary>
     /// After a logout or a restart the session has no project, but the drawing
-    /// still holds the work. Ask rather than forcing an ADSTART, which would
+    /// still holds the work. Ask rather than forcing an ADSTEPSTART, which would
     /// redraw everything from the server.
     /// </summary>
     private static async Task<bool> EnsureProject(Editor ed)
@@ -93,7 +93,7 @@ public class AutoDrawCommands
         return true;
     }
 
-    [CommandMethod("ADSTART")]
+    [CommandMethod("ADSTEPSTART")]
     public async void StartAutoDraw()
     {
         Document doc = Application.DocumentManager.MdiActiveDocument;
@@ -131,7 +131,7 @@ public class AutoDrawCommands
 
              var data = autodraw.AutoDraw.CurrentProjectData!;
 
-             // ADSTART resyncs the drawing to the record, which means wiping
+             // ADSTEPSTART resyncs the drawing to the record, which means wiping
              // what is there. Harmless on an empty drawing - the usual case -
              // but confirm first if there is anything to lose.
              int existing = CountReplaceable(db);
@@ -414,7 +414,7 @@ public class AutoDrawCommands
     /// stale - would otherwise be shown for whatever new state takes an old
     /// number.
     /// </summary>
-    [CommandMethod("ADRESET")]
+    [CommandMethod("ADSTEPRESET")]
     public async void ResetAutoDraw()
     {
         Document doc = Application.DocumentManager.MdiActiveDocument;
@@ -483,13 +483,9 @@ public class AutoDrawCommands
             if (loaded == projectId)
             {
                 autodraw.AutoDraw.Forget();
-                ed.WriteMessage("\nThe drawing still shows the old job. Run ADSTART to begin it again.");
+                ed.WriteMessage("\nThe drawing still shows the old job. Run ADSTEPSTART to begin it again.");
             }
-            if (OperationService.ProjectId == projectId)
-            {
-                OperationService.CurrentArtifact = null;
-                OperationService.Loaded = false;
-            }
+            Job.Forget(projectId);
             ed.Regen();
         }
         catch (Exception ex)
@@ -498,7 +494,7 @@ public class AutoDrawCommands
         }
     }
 
-    [CommandMethod("ADSTATUS")]
+    [CommandMethod("ADSTEPSTATUS")]
     public async void StatusAutoDraw()
     {
         Document doc = Application.DocumentManager.MdiActiveDocument;
@@ -534,11 +530,11 @@ public class AutoDrawCommands
         ed.WriteMessage("\nDrawing holds " + stamped + " server entities; the record has " + onRecord + ".");
         if (stamped == 0 && onRecord > 0)
         {
-            ed.WriteMessage("\n  -> out of step. Run ADSTART to lay the job back in.");
+            ed.WriteMessage("\n  -> out of step. Run ADSTEPSTART to lay the job back in.");
         }
         else if (stamped > 0)
         {
-            ed.WriteMessage("\n  -> in step. ADCONTINUE is safe.");
+            ed.WriteMessage("\n  -> in step. ADSTEPCONTINUE is safe.");
         }
 
         if (data.Submission?.Layers != null)
@@ -547,7 +543,7 @@ public class AutoDrawCommands
         }
     }
 
-    [CommandMethod("ADBACK")]
+    [CommandMethod("ADSTEPBACK")]
     public async void BackAutoDraw()
     {
         Document doc = Application.DocumentManager.MdiActiveDocument;
@@ -578,7 +574,7 @@ public class AutoDrawCommands
 
             // Stay on the branch being followed. Going back past its fork lands
             // on states named after the line it forked from, and taking that
-            // name would send ADFORWARD down the other line.
+            // name would send ADSTEPFORWARD down the other line.
             if (autodraw.AutoDraw.CurrentBranch == null) autodraw.AutoDraw.NoteBranch(result.Data?.Branch);
 
             // A full resync: the record is authoritative, so the drawing is
@@ -647,7 +643,7 @@ public class AutoDrawCommands
         }
     }
 
-    [CommandMethod("ADNOTE")]
+    [CommandMethod("ADSTEPNOTE")]
     public async void NoteAutoDraw()
     {
         Document doc = Application.DocumentManager.MdiActiveDocument;
@@ -701,7 +697,7 @@ public class AutoDrawCommands
         }
     }
 
-    [CommandMethod("ADBRANCH")]
+    [CommandMethod("ADSTEPBRANCH")]
     public async void BranchAutoDraw()
     {
         Document doc = Application.DocumentManager.MdiActiveDocument;
@@ -831,7 +827,7 @@ public class AutoDrawCommands
         }
     }
 
-    [CommandMethod("ADFORWARD")]
+    [CommandMethod("ADSTEPFORWARD")]
     public async void ForwardAutoDraw()
     {
         Document doc = Application.DocumentManager.MdiActiveDocument;
@@ -1106,15 +1102,15 @@ public class AutoDrawCommands
         catch (Exception ex)
         {
             ed.WriteMessage($"\nError catching the record up: {ex.Message}");
-            ed.WriteMessage("\nThe drawing is ahead of the record - run ADSTART to lay the job back in.");
+            ed.WriteMessage("\nThe drawing is ahead of the record - run ADSTEPSTART to lay the job back in.");
         }
     }
 
     /// <summary>
-    /// Take the next step. ADCONTINUE takes one; ADRUN takes as many as the
+    /// Take the next step. ADSTEPCONTINUE takes one; ADSTEPRUN takes as many as the
     /// server can without a person.
     /// </summary>
-    [CommandMethod("ADCONTINUE")]
+    [CommandMethod("ADSTEPCONTINUE")]
     public async void ContinueAutoDraw()
     {
         Document doc = Application.DocumentManager.MdiActiveDocument;
@@ -1127,11 +1123,11 @@ public class AutoDrawCommands
             return;
         }
 
-        // One substep per tick, each submitted and drawn, where ADRUN takes them
+        // One substep per tick, each submitted and drawn, where ADSTEPRUN takes them
         // all on the server and draws once. The first substep goes whatever it
-        // is, exactly as a single ADCONTINUE would - a drawn step completes with
+        // is, exactly as a single ADSTEPCONTINUE would - a drawn step completes with
         // the drawing the designer has just made. After that it stops short of
-        // any substep a person draws, the same place ADRUN stops, rather than
+        // any substep a person draws, the same place ADSTEPRUN stops, rather than
         // submitting the untouched drawing as their work.
         await Play(doc, async first =>
         {
@@ -1175,7 +1171,7 @@ public class AutoDrawCommands
         ed.WriteMessage($"\n\n*** YOUR TURN: {turn.step.Label} - {turn.substep.Label} ***");
         string? about = AutoDrawVisualizer.Explain(turn.substep);
         if (about != null) ed.WriteMessage("\n" + about);
-        ed.WriteMessage("\nDraw it in the cell outlined in red, then ADCONTINUE.\n");
+        ed.WriteMessage("\nDraw it in the cell outlined in red, then ADSTEPCONTINUE.\n");
     }
 
     /// <summary>Whether a step.substep key lies at or after where the job is now.</summary>
@@ -1202,7 +1198,7 @@ public class AutoDrawCommands
     //
     // The command itself ends at its first await, so AutoCAD is free while a job
     // plays and Escape has nothing to cancel. Starting any command stops it
-    // instead - ADSTOP says so plainly, but LINE or ZOOM does the same - at the
+    // instead - ADSTEPSTOP says so plainly, but LINE or ZOOM does the same - at the
     // end of the substep in hand, never half way through a redraw.
     private static bool _playing;
     private static bool _stopAsked;
@@ -1213,7 +1209,7 @@ public class AutoDrawCommands
         _playing = true;
         _stopAsked = false;
         doc.CommandWillStart += AskToStop;
-        ed.WriteMessage($"\nPlaying, {PluginSettings.Current.TickSeconds:0.##}s a step. Any command (ADSTOP) stops it.");
+        ed.WriteMessage($"\nPlaying, {PluginSettings.Current.TickSeconds:0.##}s a step. Any command (ADSTEPSTOP) stops it.");
 
         try
         {
@@ -1254,7 +1250,7 @@ public class AutoDrawCommands
         return true;
     }
 
-    [CommandMethod("ADSTOP")]
+    [CommandMethod("ADSTEPSTOP")]
     public void StopAutoDraw()
     {
         // Starting this command is what stops a playing job; see Play.
@@ -1262,7 +1258,7 @@ public class AutoDrawCommands
             _playing ? "\nStopping after this substep." : "\nNothing is playing.");
     }
 
-    [CommandMethod("ADSETTINGS")]
+    [CommandMethod("ADSTEPSETTINGS")]
     public async void SettingsAutoDraw()
     {
         Document doc = Application.DocumentManager.MdiActiveDocument;
@@ -1276,15 +1272,13 @@ public class AutoDrawCommands
             PromptKeywordOptions options = new PromptKeywordOptions(
                 $"\nAuto {(settings.Auto ? "On" : "Off")}, tick {settings.TickSeconds:0.##}s, "
                 + $"{settings.Layout} {settings.Direction}, gridlines {settings.Gridlines}, "
-                + $"steps {(settings.StepsDepth == 0 ? "Off" : settings.StepsDepth < 0 ? "All" : settings.StepsDepth.ToString())}. "
                 + $"info descriptions {(settings.Descriptions ? "On" : "Off")}. "
-                + "Change [Auto/Tick/Layout/Direction/Gridlines/Steps/Info] <done>: ");
+                + "Change [Auto/Tick/Layout/Direction/Gridlines/Info] <done>: ");
             options.Keywords.Add("Auto");
             options.Keywords.Add("Tick");
             options.Keywords.Add("Layout");
             options.Keywords.Add("Direction");
             options.Keywords.Add("Gridlines");
-            options.Keywords.Add("Steps");
             options.Keywords.Add("Info");
             options.AllowNone = true;
 
@@ -1320,28 +1314,6 @@ public class AutoDrawCommands
                 continue;
             }
 
-            if (picked.StringResult == "Steps")
-            {
-                // In Stack, a free ADDO of several steps draws its states
-                // beside each other: 0 only the last, 1 one per step, 2 one
-                // level into the recipes inside it, All every operation.
-                PromptIntegerOptions depth = new PromptIntegerOptions(
-                    "\nDraw each state of a free ADDO down to depth (0 off, 1 each step, 2 into its recipes) or [All]")
-                {
-                    AllowNegative = false,
-                    AllowNone = true,
-                    DefaultValue = Math.Max(settings.StepsDepth, 0),
-                    UseDefaultValue = settings.StepsDepth >= 0,
-                };
-                depth.Keywords.Add("All");
-                PromptIntegerResult said = ed.GetInteger(depth);
-                if (said.Status == PromptStatus.Keyword) settings.StepsDepth = -1;
-                else if (said.Status == PromptStatus.OK) settings.StepsDepth = said.Value;
-                else continue;
-                settings.Save();
-                continue;
-            }
-
             if (picked.StringResult == "Layout" || picked.StringResult == "Direction")
             {
                 bool layout = picked.StringResult == "Layout";
@@ -1361,7 +1333,7 @@ public class AutoDrawCommands
             if (picked.StringResult == "Auto")
             {
                 PromptKeywordOptions onOff = new PromptKeywordOptions(
-                    "\nADCONTINUE and ADFORWARD keep going on their own [On/Off]: ");
+                    "\nADCONTINUE and ADSTEPFORWARD keep going on their own [On/Off]: ");
                 onOff.Keywords.Add("On");
                 onOff.Keywords.Add("Off");
                 onOff.Keywords.Default = settings.Auto ? "On" : "Off";
@@ -1405,10 +1377,10 @@ public class AutoDrawCommands
     /// sends the modelspace up and the drawing back down, so a dozen steps is
     /// two dozen transfers of the whole drawing and as many codec passes. A run
     /// submits once and replies once; the states in between are recorded on the
-    /// server and never drawn here, which is why ADBACK and ADFORWARD can still
+    /// server and never drawn here, which is why ADSTEPBACK and ADSTEPFORWARD can still
     /// reach every one of them afterwards.
     /// </summary>
-    [CommandMethod("ADRUN")]
+    [CommandMethod("ADSTEPRUN")]
     public async void RunAutoDraw()
     {
         Document doc = Application.DocumentManager.MdiActiveDocument;
@@ -1417,7 +1389,7 @@ public class AutoDrawCommands
         if (!AskWhichSubstep(ed, "Run", "", out string until))
         { ed.WriteMessage("\nCancelled."); return; }
 
-        // Enter means "as far as you can", which is the reason to use ADRUN at
+        // Enter means "as far as you can", which is the reason to use ADSTEPRUN at
         // all; a named substep stops there.
         await Advance(string.IsNullOrWhiteSpace(until) ? "all" : until);
     }
@@ -1461,7 +1433,7 @@ public class AutoDrawCommands
             if (stamped == 0 && onRecord > 0)
             {
                 ed.WriteMessage($"\nThis drawing holds none of the server's {onRecord} entities.");
-                ed.WriteMessage("\nRun ADSTART to lay the job back in before continuing.");
+                ed.WriteMessage("\nRun ADSTEPSTART to lay the job back in before continuing.");
                 return false;
             }
 
@@ -1529,7 +1501,7 @@ public class AutoDrawCommands
                     : " (" + string.Join(", ", carry.ByLayer.Select(p => p.Key + " " + p.Value)) + ")";
                 ed.WriteMessage(carry.Applied
                     ? "\nThis step dropped " + carry.Dropped + " entities" + layers
-                      + ". ADBACK restores them."
+                      + ". ADSTEPBACK restores them."
                     : "\nKept everything; this step would have dropped " + carry.Dropped
                       + " entities" + layers + ".");
             }

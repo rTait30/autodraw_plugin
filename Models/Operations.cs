@@ -204,10 +204,14 @@ public class OperationResultDTO
     /// <summary>
     /// On a project's drawing: where a recipe stopped for a person on its run -
     /// a step-through, a review, or a save drawn up to MPanel - while the run is
-    /// still at that drawing. What ADOPCONTINUE goes on with after a restart.
+    /// still at that drawing. What ADGO goes on with after a restart.
     /// </summary>
     [JsonProperty("waiting")]
     public WaitingDTO? Waiting { get; set; }
+
+    /// <summary>On a project's drawing: each state along its history, oldest first, with its operation.</summary>
+    [JsonProperty("history_notes")]
+    public List<JObject>? HistoryNotes { get; set; }
 }
 
 /// <summary>A run stopped for a person, as the server keeps it on the run.</summary>

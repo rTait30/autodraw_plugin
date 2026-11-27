@@ -31,7 +31,7 @@ namespace autodraw_plugin.Services
 
         /// <summary>
         /// Where the job stands, as the server last reported it. The copy in
-        /// CurrentProjectData is from ADSTART and goes stale with the first
+        /// CurrentProjectData is from ADSTEPSTART and goes stale with the first
         /// step taken, so anything that needs to know where the job is now -
         /// playing on, or checking a target is still ahead - reads this.
         /// </summary>
@@ -130,7 +130,7 @@ namespace autodraw_plugin.Services
                 ? await ApiService.PostForm($"/automation/continue/{projectId}", fields)
                 : await ApiService.PostDxf($"/automation/continue/{projectId}", dxfPath, fields);
 
-            return Remember(await Interpret(response, "ADCONTINUE"));
+            return Remember(await Interpret(response, "ADSTEPCONTINUE"));
         }
 
         /// <summary>
@@ -145,7 +145,7 @@ namespace autodraw_plugin.Services
             HttpResponseMessage response = await ApiService.PostForm(
                 $"/automation/back/{projectId}", fields);
 
-            return Remember(await Interpret(response, "ADBACK"));
+            return Remember(await Interpret(response, "ADSTEPBACK"));
         }
 
         /// <summary>
@@ -157,7 +157,7 @@ namespace autodraw_plugin.Services
                 $"/automation/note/{projectId}",
                 new Dictionary<string, string> { ["note"] = text ?? "" });
 
-            return await Interpret(response, "ADNOTE");
+            return await Interpret(response, "ADSTEPNOTE");
         }
 
         /// <summary>List the lines of work this project holds.</summary>
@@ -186,7 +186,7 @@ namespace autodraw_plugin.Services
                 $"/automation/branch/{projectId}",
                 new Dictionary<string, string>(LaidOut()) { ["branch"] = name });
 
-            return Remember(await Interpret(response, "ADBRANCH"));
+            return Remember(await Interpret(response, "ADSTEPBRANCH"));
         }
 
         /// <summary>
@@ -205,7 +205,7 @@ namespace autodraw_plugin.Services
             HttpResponseMessage response = await ApiService.PostForm(
                 $"/automation/forward/{projectId}", fields);
 
-            return Remember(await Interpret(response, "ADFORWARD"));
+            return Remember(await Interpret(response, "ADSTEPFORWARD"));
         }
 
         /// <summary>
@@ -311,7 +311,7 @@ namespace autodraw_plugin.Services
         {
             HttpResponseMessage response = await ApiService.PostForm(
                 $"/automation/reset/{projectId}", new Dictionary<string, string>());
-            return await Interpret(response, "ADRESET");
+            return await Interpret(response, "ADSTEPRESET");
         }
 
         /// <summary>

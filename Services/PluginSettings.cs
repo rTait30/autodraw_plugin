@@ -14,7 +14,7 @@ namespace autodraw_plugin.Services;
 public class PluginSettings
 {
     /// <summary>
-    /// ADCONTINUE and ADFORWARD keep going on their own, one substep per tick,
+    /// ADSTEPCONTINUE and ADSTEPFORWARD keep going on their own, one substep per tick,
     /// instead of taking a single substep.
     /// </summary>
     public bool Auto { get; set; }
@@ -42,7 +42,7 @@ public class PluginSettings
     public string Gridlines { get; set; } = "All";
 
     /// <summary>
-    /// How far into a free ADDO of several steps - a list typed in or a recipe
+    /// How far into a free ADRUN of several steps - a list typed in or a recipe
     /// - its states are drawn, each beside the last with a caption, in Stack
     /// layout: 0 only the final one, 1 one per step, 2 opening the recipes
     /// inside it one level, -1 after every operation however deep.
@@ -56,8 +56,8 @@ public class PluginSettings
     public bool Descriptions { get; set; }
 
     /// <summary>
-    /// A recipe run with ADOP stops after every operation (`pause=each`), for
-    /// the designer to look and ADOPCONTINUE, instead of only after a step
+    /// A recipe run with ADRUN stops after every operation (`pause=each`), for
+    /// the designer to look and ADGO, instead of only after a step
     /// marked for review (`pause=reviews`). Free runs and project runs alike.
     /// </summary>
     public bool StepThrough { get; set; }

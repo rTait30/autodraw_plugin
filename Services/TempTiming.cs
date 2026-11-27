@@ -3,7 +3,7 @@ using System.Text;
 
 namespace autodraw_plugin.Services;
 
-// TEMP TIMING - measuring where ADSTART's time goes. Delete this file and every
+// TEMP TIMING - measuring where ADSTEPSTART's time goes. Delete this file and every
 // line marked "TEMP TIMING" once the numbers are in.
 public static class TempTiming
 {

@@ -64,7 +64,7 @@ public static class DxfTransferService
     /// <summary>
     /// How many entities in the drawing carry the server's stamp. Compared with
     /// the record's own count, this says whether the drawing is in step with
-    /// the server or whether it needs an ADSTART to resync.
+    /// the server or whether it needs an ADSTEPSTART to resync.
     /// </summary>
     public static int CountStamped(Database db)
     {

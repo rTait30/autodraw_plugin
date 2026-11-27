@@ -33,7 +33,7 @@ public static class OperationService
     /// Run an operation free on a drawing. With `itemPaths`, what was selected
     /// for each item goes as that item's own drawing (`drawing_&lt;item&gt;`)
     /// in place of `dxfPath`, which may then be null. `start` and `facts` go on
-    /// with a recipe from where it stopped for review (`Paused`).
+    /// with a recipe from where it stopped for review (`Job.Paused`).
     /// </summary>
     public static async Task<OperationResultDTO> Run(string id, string? dxfPath, JObject inputs,
                                                      int objectFloor,
@@ -55,7 +55,7 @@ public static class OperationService
             ["layout"] = PluginSettings.Current.Layout.ToLowerInvariant(),
             ["direction"] = PluginSettings.Current.Direction.ToLowerInvariant(),
         };
-        if (DataProjectId.HasValue) fields["project_id"] = DataProjectId.Value.ToString();
+        if (Job.AnswersFrom.HasValue) fields["project_id"] = Job.AnswersFrom.Value.ToString();
         if (start > 1) fields["start"] = start.ToString();
         if (facts != null && facts.Type != JTokenType.Null) fields["facts"] = facts.ToString(Formatting.None);
         // The states along the way, as deep as the designer asked to see them.
@@ -89,40 +89,6 @@ public static class OperationService
         };
     }
 
-    /// <summary>
-    /// The run stopped for review, which ADOPCONTINUE goes on with; null when
-    /// none is waiting. A free run's server keeps nothing, so this holds what
-    /// it needs again: the name run, the answers given, where to go on from and
-    /// the facts settled so far. A project run needs only the name, answers
-    /// and where to go on from - the project kept what ran.
-    /// </summary>
-    public static PausedRun? Paused { get; set; }
-
-    /// <summary>
-    /// The project ADDO runs on, when one is chosen (ADDOPROJECT); a free run
-    /// on the drawing as it is otherwise.
-    /// </summary>
-    public static int? ProjectId { get; set; }
-
-    /// <summary>
-    /// The project a free run takes its answers from (ADDODATA), storing
-    /// nothing on it; none, and everything not in the drawing is asked.
-    /// </summary>
-    public static int? DataProjectId { get; set; }
-
-    /// <summary>The ids of the job items the chosen project's history has drawn, as last laid in.</summary>
-    public static List<int> Items { get; set; } = new();
-
-    /// <summary>The project drawing last laid in here, which a run starts from.</summary>
-    public static int? CurrentArtifact { get; set; }
-
-    /// <summary>
-    /// Whether the drawing on screen is the project's as ADDO laid it in. Only
-    /// then is it sent back with a run: a drawing laid in some other way is in
-    /// another place on the page and would come back looking moved.
-    /// </summary>
-    public static bool Loaded { get; set; }
-
     /// <summary>Where a recipe stops for the designer: after every operation, or only at a review.</summary>
     private static string Pause => PluginSettings.Current.StepThrough ? "each" : "reviews";
 
@@ -155,7 +121,7 @@ public static class OperationService
     /// Run an operation on the project, sending the drawing back with it where
     /// one is given. Refusals - a value to ask, a project moved on - come back
     /// readable rather than thrown. `start` goes on with a recipe from where it
-    /// stopped (`Paused`); unlike a free run no facts go with it, since the
+    /// stopped (`Job.Paused`); unlike a free run no facts go with it, since the
     /// server kept what ran.
     /// </summary>
     public static async Task<OperationResultDTO> RunOnProject(
@@ -324,15 +290,4 @@ public static class OperationService
         }
         return erased;
     }
-}
-
-/// <summary>A run stopped for review, as ADOPCONTINUE sends it on.</summary>
-public class PausedRun
-{
-    /// <summary>The project it ran on, or null for a free run.</summary>
-    public int? ProjectId { get; init; }
-    public string Name { get; init; } = "";
-    public JObject Inputs { get; init; } = new();
-    public int Next { get; init; }
-    public JToken? Facts { get; init; }
 }
